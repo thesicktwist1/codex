@@ -29,7 +29,7 @@ func RegisterValidation(username, password, email string) error {
 	if err := isValidEmail(email); err != nil {
 		return err
 	}
-	if err := isValidPassword(password); err != nil {
+	if err := IsValidPassword(password); err != nil {
 		return err
 	}
 	if err := isValidUsername(username); err != nil {
@@ -45,11 +45,6 @@ func HashedPassword(password string) ([]byte, error) {
 		return []byte{}, err
 	}
 	return hash, nil
-}
-
-// Compare a password to a hash
-func PWValidation(hash []byte, password string) error {
-	return bcrypt.CompareHashAndPassword(hash, []byte(password))
 }
 
 // Extract a Bearer token from a http header
@@ -110,12 +105,8 @@ func GenerateRefreshToken() (string, error) {
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(buf), nil
-}
-
-// Extract the refresh token key from the given ID
-func GetRefreshTokenKey(id string) string {
-	return strings.Join([]string{id, "token"}, "/")
+	token := strings.Join([]string{"token", hex.EncodeToString(buf)}, "-")
+	return token, nil
 }
 
 // Extract a refresh token from a http header
@@ -132,7 +123,7 @@ func isValidEmail(email string) error {
 	return err
 }
 
-func isValidPassword(pw string) error {
+func IsValidPassword(pw string) error {
 	if len(pw) < pwdMinLen || len(pw) > pwdMaxLen {
 		return fmt.Errorf("password must contain between %d and %d characters", pwdMinLen, pwdMaxLen)
 	}

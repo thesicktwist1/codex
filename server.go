@@ -3,11 +3,9 @@ package main
 import (
 	"codex/internal/auth"
 	"context"
-	"errors"
 	"net/http"
-	"time"
 
-	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -36,16 +34,6 @@ func NewConfig(rdb *redis.Client, opts ...OptsFunc) *Config {
 	return c
 }
 
-func (c *Config) revokeRefreshToken(ctx context.Context, userID string) error {
-	refreshKey := auth.GetRefreshTokenKey(userID)
-	if err := c.redis.Del(ctx, refreshKey).Err(); err != nil {
-		if !errors.Is(err, redis.Nil) {
-			return err
-		}
-	}
-	return nil
-}
-
 func (c *Config) refreshTokenAuth(ctx context.Context, header http.Header) (string, error) {
 	token, err := auth.GetRefreshToken(header)
 	if err != nil {
@@ -58,30 +46,19 @@ func (c *Config) refreshTokenAuth(ctx context.Context, header http.Header) (stri
 	return id, nil
 }
 
-func (c *Config) newRefreshToken(ctx context.Context, userID string) (string, error) {
-	token, err := auth.GenerateRefreshToken()
-	if err != nil {
-		return "", err
-	}
-	hashedToken, err := auth.HashedRefreshToken(token)
-	if err := c.redis.Set(ctx, string(hashedToken), userID, time.Hour*72).Err(); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
 func (c *Config) setupMux() {
 	mux := chi.NewMux()
-	// Connection requests
+	// connection requests
 	mux.Post("/register", c.handlerRegister)
+	mux.Post("/revoke", c.handlerRevokeToken)
 	mux.Post("/login", c.handlerLogin)
+
+	// authed handlers
+	mux.Delete("/users", c.middlewareAuth(c.handlerDelete))
+
 	mux.Get("/healthz", c.handlerReadiness)
 
 	c.server.Handler = mux
-}
-
-func (c *Config) handlerReadiness(w http.ResponseWriter, r *http.Request) {
-	respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 type Opts struct {

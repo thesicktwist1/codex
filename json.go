@@ -20,3 +20,7 @@ func respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 		slog.Error("error writing payload", "err", err)
 	}
 }
+
+func emptyResponse(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNoContent)
+}

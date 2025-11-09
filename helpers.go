@@ -1,13 +1,13 @@
 package main
 
 import (
+	"codex/internal/auth"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"log/slog"
+	"net/http"
 	"strings"
-
-	"github.com/redis/go-redis/v9"
+	"time"
 )
 
 var (
@@ -15,21 +15,17 @@ var (
 	userSep    = ":"
 )
 
-func (c *Config) NewKey(ctx context.Context, email, username string) (string, error) {
-
+func (c *Config) NewUserKeys(ctx context.Context, email, username string) (string, error) {
 	id := EncodeToString([]string{email, username})
 	emailKey := EncodeToString([]string{email})
 	userKey := EncodeToString([]string{username})
 
 	id = strings.Join([]string{userString, id}, userSep)
 
-	if err := c.redis.Set(ctx, emailKey, id, 0).Err(); err != nil {
-		return "", err
-	}
-	if err := c.redis.Set(ctx, userKey, id, 0).Err(); err != nil {
-		if err := c.redis.Del(ctx, emailKey).Err(); err != nil {
-			slog.Error("redis deletion error", "err", err)
-		}
+	if err := c.redis.MSet(ctx,
+		emailKey, id,
+		userKey, id,
+	).Err(); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -37,11 +33,42 @@ func (c *Config) NewKey(ctx context.Context, email, username string) (string, er
 
 func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
 	for _, key := range keys {
-		if err := c.redis.Get(ctx, key).Err(); err != redis.Nil {
+		if err := c.redis.Get(ctx, key).Err(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (c *Config) DeleteUser(ctx context.Context, user *User) error {
+	idKey := EncodeToString([]string{user.Email, user.Username})
+	emailKey := EncodeToString([]string{user.Email})
+	userKey := EncodeToString([]string{user.Username})
+
+	id := strings.Join([]string{userString, idKey}, userSep)
+	if err := c.redis.Del(ctx, emailKey, userKey, id).Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Config) newRefreshToken(ctx context.Context, id string) (string, error) {
+	token, err := auth.GenerateRefreshToken()
+	if err != nil {
+		return "", err
+	}
+	if err := c.redis.Set(ctx, token, id, time.Hour*72).Err(); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (c *Config) revokeRefreshToken(r *http.Request) error {
+	token, err := auth.GetRefreshToken(r.Header)
+	if err != nil {
+		return err
+	}
+	return c.redis.Del(r.Context(), token).Err()
 }
 
 func EncodeToString(elems []string) string {
