@@ -7,26 +7,32 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+)
+
+var (
+	userString = "user"
+	userSep    = ":"
 )
 
 func (c *Config) NewKey(ctx context.Context, email, username string) (string, error) {
 
-	mainKey := EncodeToString([]string{email, username})
+	id := EncodeToString([]string{email, username})
 	emailKey := EncodeToString([]string{email})
 	userKey := EncodeToString([]string{username})
 
-	if err := c.redis.Set(ctx, emailKey, mainKey, 0).Err(); err != nil {
+	id = strings.Join([]string{userString, id}, userSep)
+
+	if err := c.redis.Set(ctx, emailKey, id, 0).Err(); err != nil {
 		return "", err
 	}
-	if err := c.redis.Set(ctx, userKey, mainKey, 0).Err(); err != nil {
+	if err := c.redis.Set(ctx, userKey, id, 0).Err(); err != nil {
 		if err := c.redis.Del(ctx, emailKey).Err(); err != nil {
 			slog.Error("redis deletion error", "err", err)
 		}
 		return "", err
 	}
-	return mainKey, nil
+	return id, nil
 }
 
 func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
@@ -41,8 +47,4 @@ func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
 func EncodeToString(elems []string) string {
 	key := sha256.Sum256([]byte(strings.Join(elems, "")))
 	return hex.EncodeToString(key[:])[:8]
-}
-
-func newID(username string) string {
-	return strings.Join([]string{username, uuid.New().String()[:4]}, keySep)
 }

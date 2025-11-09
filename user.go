@@ -3,10 +3,9 @@ package main
 const ()
 
 type User struct {
-	ID             string
-	Username       string
-	CreatedAt      string
-	UpdatedAt      string
+	Username       string `json:"username"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 	HashedPassword []byte
-	Email          string
+	Email          string `json:"email"`
 }

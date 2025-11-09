@@ -9,12 +9,10 @@ import (
 
 const (
 	keySep    = "-"
-	users     = "USERS"
+	user      = "USER"
 	libraries = "LIBRARIES"
 	books     = "BOOKS"
 )
-
-type AuthedHandler func(http.ResponseWriter, *http.Request, *User)
 
 func (c *Config) handlerRegister(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
@@ -51,10 +49,12 @@ func (c *Config) handlerRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	// TODO: send confirmation email before
 	// creating user or something like that
+	createdAt := time.Now().String()
+	updatedAt := time.Now().String()
+
 	user, err := json.Marshal(&User{
-		ID:             newID(params.Username),
-		CreatedAt:      time.Now().String(),
-		UpdatedAt:      time.Now().String(),
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
 		HashedPassword: hash,
 		Email:          params.Email,
 		Username:       params.Username,
@@ -67,6 +67,12 @@ func (c *Config) handlerRegister(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusInternalServerError, err)
 		return
 	}
+	respondWithJSON(w, http.StatusCreated, User{
+		Username:  params.Username,
+		Email:     params.Email,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	})
 }
 
 func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
@@ -80,12 +86,12 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusBadRequest, "malformed payload")
 		return
 	}
-	mainKey, err := c.redis.Get(r.Context(), users).Result()
+	id, err := c.redis.Get(r.Context(), EncodeToString([]string{params.Key})).Result()
 	if err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, err)
 		return
 	}
-	data, err := c.redis.Get(r.Context(), mainKey).Bytes()
+	data, err := c.redis.Get(r.Context(), id).Bytes()
 	if err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, err)
 		return
@@ -99,4 +105,31 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusUnauthorized, err)
 		return
 	}
+	if err := c.revokeRefreshToken(r.Context(), id); err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, err)
+		return
+	}
+	refreshToken, err := c.newRefreshToken(r.Context(), id)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, err)
+		return
+	}
+	jwtToken, err := auth.GenerateJWT(c.jwtSecret, id)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, err)
+		return
+	}
+	type response struct {
+		User
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	respondWithJSON(w, http.StatusAccepted, response{
+		User: User{
+			Username: user.Username,
+			Email:    user.Email,
+		},
+		RefreshToken: refreshToken,
+		Token:        jwtToken,
+	})
 }
