@@ -26,11 +26,11 @@ type Book struct {
 type Library struct {
 	ID      string
 	Title   string
-	Content []Content
+	Content []Tracker
 	Private bool
 }
 
-type Content struct {
+type Tracker struct {
 	ID          BookID
 	Status      Status
 	Note        int

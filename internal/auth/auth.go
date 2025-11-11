@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -15,11 +17,13 @@ import (
 )
 
 const (
-	pwdMaxLen  = 24
-	pwdMinLen  = 12
-	nameMinLen = 8
-	nameMaxLen = 18
-	authBearer = "Bearer"
+	pwdMaxLen   = 24
+	pwdMinLen   = 12
+	titleMinLen = 4
+	titleMaxLen = 48
+	nameMinLen  = 8
+	nameMaxLen  = 18
+	authBearer  = "Bearer"
 )
 
 var expiresIn = time.Minute * 15
@@ -57,24 +61,37 @@ func getBearerToken(header http.Header) (string, error) {
 	return split[1], nil
 }
 
-func JWTAuthorization(header http.Header, jwtSecret string) (string, error) {
+// AuthorizeJWT extracts and validates a JWT from the http header using the given secret
+func AuthorizeJWT(header http.Header, jwtSecret string) (string, error) {
 	tokenString, err := getBearerToken(header)
 	if err != nil {
 		return "", err
 	}
 	claims := jwt.RegisteredClaims{}
-	t, err := jwt.ParseWithClaims(tokenString, &claims, func(t *jwt.Token) (any, error) {
-		return jwtSecret, nil
-	})
-	if err != nil {
+	t, err := jwt.ParseWithClaims(tokenString, &claims,
+		func(t *jwt.Token) (any, error) {
+			return []byte(jwtSecret), nil
+		})
+	if t == nil {
 		return "", err
-	}
-	if t.Valid {
-		return "", fmt.Errorf("invalid token")
 	}
 	sub, err := t.Claims.GetSubject()
 	if err != nil || sub == "" {
 		return "", err
+	}
+	issuedAt, err := t.Claims.GetIssuedAt()
+	if err != nil {
+		return "", err
+	}
+	exp, err := t.Claims.GetExpirationTime()
+	if err != nil {
+		return "", err
+	}
+	if issuedAt.After(exp.Time) || issuedAt.After(time.Now()) {
+		return "", jwt.ErrTokenNotValidYet
+	}
+	if time.Now().After(exp.Time) {
+		return sub, jwt.ErrTokenExpired
 	}
 	return sub, nil
 }
@@ -85,19 +102,12 @@ func GenerateJWT(jwtSecret, userID string) (string, error) {
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	})
-	jwtToken, err := token.SignedString(jwtSecret)
-	if err != nil {
-		return "", err
-	}
-	return strings.Join([]string{authBearer, jwtToken}, " "), nil
+	return token.SignedString(jwtSecret)
 }
 
-func HashedRefreshToken(token string) ([]byte, error) {
-	return bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
-}
-
-func RefreshTokenValidation(token string, hashedToken []byte) error {
-	return bcrypt.CompareHashAndPassword(hashedToken, []byte(token))
+func IsValidRefreshToken(token, storedToken string, secret []byte) bool {
+	hashedToken := HashRefreshToken(token, secret)
+	return hmac.Equal([]byte(hashedToken), []byte(storedToken))
 }
 
 func GenerateRefreshToken() (string, error) {
@@ -105,27 +115,47 @@ func GenerateRefreshToken() (string, error) {
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	token := strings.Join([]string{"token", hex.EncodeToString(buf)}, "-")
-	return token, nil
+	return hex.EncodeToString(buf), nil
+}
+
+func BearerJWT(token string) string {
+	return strings.Join([]string{authBearer, token}, " ")
 }
 
 // Extract a refresh token from a http header
 func GetRefreshToken(header http.Header) (string, error) {
-	token := header.Get("refresh_token")
+	token := header.Get("X-Refresh-Token")
 	if token == "" {
 		return "", fmt.Errorf("refresh token not found ")
 	}
 	return token, nil
 }
 
-func isValidEmail(email string) error {
-	_, err := mail.ParseAddress(email)
-	return err
+func HashRefreshToken(token string, secret []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func IsValidTitle(title string) error {
+	if len(title) < titleMinLen || len(title) > titleMaxLen {
+		return fmt.Errorf("titles must contain between %d and %d characters",
+			titleMinLen,
+			titleMaxLen)
+	}
+	for _, c := range title {
+		if c < 33 || c > 126 {
+			return fmt.Errorf("invalid title character : %v", c)
+		}
+	}
+	return nil
 }
 
 func IsValidPassword(pw string) error {
 	if len(pw) < pwdMinLen || len(pw) > pwdMaxLen {
-		return fmt.Errorf("password must contain between %d and %d characters", pwdMinLen, pwdMaxLen)
+		return fmt.Errorf("password must contain between %d and %d characters",
+			pwdMinLen,
+			pwdMaxLen)
 	}
 	want := map[string]bool{
 		"hasDigit": false,
@@ -171,6 +201,20 @@ func IsValidPassword(pw string) error {
 	return nil
 }
 
+func IsValidKey(key string) error {
+	var valid bool
+	if err := isValidEmail(key); err == nil {
+		valid = true
+	}
+	if err := isValidUsername(key); err == nil {
+		valid = true
+	}
+	if !valid {
+		return fmt.Errorf("invalid key")
+	}
+	return nil
+}
+
 func isValidUsername(username string) error {
 	if len(username) < nameMinLen || len(username) > nameMaxLen {
 		return fmt.Errorf("username must contain between %d and %d characters", nameMinLen, nameMaxLen)
@@ -181,4 +225,9 @@ func isValidUsername(username string) error {
 		}
 	}
 	return nil
+}
+
+func isValidEmail(email string) error {
+	_, err := mail.ParseAddress(email)
+	return err
 }

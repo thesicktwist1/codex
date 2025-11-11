@@ -2,36 +2,40 @@ package main
 
 import (
 	"codex/internal/auth"
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type AuthedHandler func(http.ResponseWriter, *http.Request, *User)
 
 func (c *Config) middlewareAuth(authFunc AuthedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := auth.JWTAuthorization(r.Header, c.jwtSecret)
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		id, err := auth.AuthorizeJWT(r.Header, c.jwtSecret)
 		if err != nil {
-			id, err := c.refreshTokenAuth(r.Context(), r.Header)
-			if err != nil {
-				respondWithJSON(w, http.StatusUnauthorized, "unauthorized")
+			if !errors.Is(err, jwt.ErrTokenExpired) {
+				respondWithJSON(w, http.StatusUnauthorized, "invalid jwt token")
+				return
+			}
+			if err := c.authorizeRefreshToken(ctx, r.Header, id); err != nil {
+				respondWithJSON(w, http.StatusUnauthorized, "invalid token")
 				return
 			}
 			jwtToken, err := auth.GenerateJWT(c.jwtSecret, id)
 			if err != nil {
-				respondWithJSON(w, http.StatusInternalServerError, err)
+				respondWithJSON(w, http.StatusInternalServerError, "internal error")
 				return
 			}
-			w.Header().Set("Authorization", jwtToken)
+			r.Header.Set("Authorization", auth.BearerJWT(jwtToken))
 		}
-		data, err := c.redis.Get(r.Context(), id).Bytes()
+		user, err := c.GetUser(ctx, id)
 		if err != nil {
-			respondWithJSON(w, http.StatusInternalServerError, err)
-			return
-		}
-		var user User
-		if err := json.Unmarshal(data, &user); err != nil {
-			respondWithJSON(w, http.StatusInternalServerError, err)
+			respondWithJSON(w, http.StatusInternalServerError, "couldn't retrieve user")
 			return
 		}
 		authFunc(w, r, &user)

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"codex/internal/auth"
-	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -14,9 +12,10 @@ const (
 )
 
 type Config struct {
-	redis     *redis.Client
-	server    http.Server
-	jwtSecret string
+	redis      *redis.Client
+	server     http.Server
+	jwtSecret  string
+	hmacSecret []byte
 }
 
 func NewConfig(rdb *redis.Client, opts ...OptsFunc) *Config {
@@ -34,28 +33,20 @@ func NewConfig(rdb *redis.Client, opts ...OptsFunc) *Config {
 	return c
 }
 
-func (c *Config) refreshTokenAuth(ctx context.Context, header http.Header) (string, error) {
-	token, err := auth.GetRefreshToken(header)
-	if err != nil {
-		return "", err
-	}
-	id, err := c.redis.Get(ctx, token).Result()
-	if err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
 func (c *Config) setupMux() {
 	mux := chi.NewMux()
-	// connection requests
-	mux.Post("/register", c.handlerRegister)
-	mux.Post("/revoke", c.handlerRevokeToken)
+	// account handling
+	mux.Post("/register", c.handlerRegisterUser)
+	mux.Post("/revoke", c.middlewareAuth(c.handlerRevokeToken))
 	mux.Post("/login", c.handlerLogin)
-
-	// authed handlers
 	mux.Delete("/users", c.middlewareAuth(c.handlerDelete))
+	mux.Get("/users", c.middlewareAuth(c.handlerGetUser))
+	mux.Put("/users", c.middlewareAuth(c.handlerUpdateUser))
 
+	// libraries handling
+	mux.Post("/libraries", c.middlewareAuth(c.handlerRegisterLibrary))
+
+	// server readiness
 	mux.Get("/healthz", c.handlerReadiness)
 
 	c.server.Handler = mux
