@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/mail"
@@ -17,16 +18,24 @@ import (
 )
 
 const (
-	pwdMaxLen   = 24
-	pwdMinLen   = 12
+	pwdMaxLen = 24
+	pwdMinLen = 12
+
 	titleMinLen = 4
 	titleMaxLen = 48
-	nameMinLen  = 8
-	nameMaxLen  = 18
-	authBearer  = "Bearer"
+
+	nameMinLen = 8
+	nameMaxLen = 18
+
+	Bearer = "Bearer"
 )
 
-var expiresIn = time.Minute * 15
+var (
+	expiresIn                 = time.Minute * 15
+	ErrNoAuthHeaderIncluded   = errors.New("no Authorization header included")
+	ErrNoRefreshTokenIncluded = errors.New("no X-Refresh-Token header included")
+	ErrMalformedAuth          = errors.New("malformed authorization header")
+)
 
 // Validate a register request.
 func RegisterValidation(username, password, email string) error {
@@ -54,9 +63,12 @@ func HashedPassword(password string) ([]byte, error) {
 // Extract a Bearer token from a http header
 func getBearerToken(header http.Header) (string, error) {
 	authHeader := header.Get("Authorization")
+	if authHeader == "" {
+		return "", ErrNoAuthHeaderIncluded
+	}
 	split := strings.Split(authHeader, " ")
-	if len(split) != 2 || split[0] != authBearer {
-		return "", fmt.Errorf("malformed authorization header")
+	if len(split) != 2 || split[0] != Bearer {
+		return "", ErrMalformedAuth
 	}
 	return split[1], nil
 }
@@ -90,7 +102,7 @@ func AuthorizeJWT(header http.Header, jwtSecret string) (string, error) {
 	if issuedAt.After(exp.Time) || issuedAt.After(time.Now()) {
 		return "", jwt.ErrTokenNotValidYet
 	}
-	if time.Now().After(exp.Time) {
+	if time.Now().After(exp.Time) && issuedAt.Before(exp.Time) {
 		return sub, jwt.ErrTokenExpired
 	}
 	return sub, nil
@@ -119,14 +131,14 @@ func GenerateRefreshToken() (string, error) {
 }
 
 func BearerJWT(token string) string {
-	return strings.Join([]string{authBearer, token}, " ")
+	return strings.Join([]string{Bearer, token}, " ")
 }
 
 // Extract a refresh token from a http header
 func GetRefreshToken(header http.Header) (string, error) {
 	token := header.Get("X-Refresh-Token")
 	if token == "" {
-		return "", fmt.Errorf("refresh token not found ")
+		return "", ErrNoRefreshTokenIncluded
 	}
 	return token, nil
 }

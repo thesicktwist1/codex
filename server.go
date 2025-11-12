@@ -39,12 +39,15 @@ func (c *Config) setupMux() {
 	mux.Post("/register", c.handlerRegisterUser)
 	mux.Post("/revoke", c.middlewareAuth(c.handlerRevokeToken))
 	mux.Post("/login", c.handlerLogin)
-	mux.Delete("/users", c.middlewareAuth(c.handlerDelete))
+	mux.Delete("/users", c.middlewareAuth(c.handlerDeleteUser))
 	mux.Get("/users", c.middlewareAuth(c.handlerGetUser))
 	mux.Put("/users", c.middlewareAuth(c.handlerUpdateUser))
 
 	// libraries handling
-	mux.Post("/libraries", c.middlewareAuth(c.handlerRegisterLibrary))
+	mux.Post("/libraries", c.middlewareAuth(c.handlerCreateLibrary))
+	mux.Get("/libraries", c.middlewareAuth(c.handlerGetUsersLibraries))
+	mux.Get("/libraries/{id}", c.handlerGetLibrary)
+	mux.Delete("/libraries/{id}", c.middlewareAuth(c.handlerDeleteLibrary))
 
 	// server readiness
 	mux.Get("/healthz", c.handlerReadiness)

@@ -8,7 +8,9 @@ type Status uint32
 
 const (
 	Reading Status = 1 << iota
+	ToRead
 	Finished
+	DNF
 )
 
 type Book struct {
@@ -24,19 +26,26 @@ type Book struct {
 }
 
 type Library struct {
-	ID      string
-	Title   string
-	Content []Tracker
-	Private bool
+	ID         string
+	Owner      string
+	Title      string
+	CreatedAt  string
+	UpdatedAt  string
+	TrackerIDs []string
+	Private    bool
 }
 
 type Tracker struct {
-	ID          BookID
+	BookID      string
+	UserID      string
 	Status      Status
 	Note        int
 	CurrentPage int
-	Review      string
-	UserID      string
+}
+
+type Tracked struct {
+	Book    Book
+	Tracker Tracker
 }
 
 func (s Status) String() string {
@@ -46,6 +55,12 @@ func (s Status) String() string {
 	}
 	if s.Has(Reading) {
 		b.WriteString("READING")
+	}
+	if s.Has(ToRead) {
+		b.WriteString("TO READ")
+	}
+	if s.Has(DNF) {
+		b.WriteString("DID NOT FINISH")
 	}
 	if b.Len() == 0 {
 		return "[no status]"

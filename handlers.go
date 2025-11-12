@@ -4,9 +4,11 @@ import (
 	"codex/internal/auth"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -63,7 +65,7 @@ func (c *Config) handlerRegisterUser(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := c.redis.HSet(r.Context(), HUsers, map[string]any{
+	if err := c.redis.HSet(r.Context(), UsersTable, map[string]any{
 		id: user,
 	}).Err(); err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
@@ -93,7 +95,7 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusBadRequest, "invalid key")
 		return
 	}
-	id, err := c.redis.HGet(r.Context(), HKeys,
+	id, err := c.redis.HGet(r.Context(), KeysTable,
 		EncodeToString([]string{params.Key})).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
@@ -112,7 +114,7 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	refreshToken, err := c.redis.HGet(r.Context(), HToken, id).Result()
+	refreshToken, err := c.redis.HGet(r.Context(), TokensTable, id).Result()
 	if err != nil {
 		refreshToken, err = c.newRefreshToken(r.Context(), id)
 		if err != nil {
@@ -141,7 +143,7 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (c *Config) handlerDelete(w http.ResponseWriter, r *http.Request, user *User) {
+func (c *Config) handlerDeleteUser(w http.ResponseWriter, r *http.Request, user *User) {
 	type parameters struct {
 		Password string `json:"password"`
 	}
@@ -171,7 +173,7 @@ func (c *Config) handlerRevokeToken(w http.ResponseWriter, r *http.Request, user
 		respondWithJSON(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
-	storedToken, err := c.redis.HGet(r.Context(), HToken, user.ID).Result()
+	storedToken, err := c.redis.HGet(r.Context(), TokensTable, user.ID).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			respondWithJSON(w, http.StatusBadRequest, "token doesn't exist")
@@ -184,7 +186,7 @@ func (c *Config) handlerRevokeToken(w http.ResponseWriter, r *http.Request, user
 		respondWithJSON(w, http.StatusUnauthorized, "token doesn't match")
 		return
 	}
-	if err := c.redis.HDel(r.Context(), HToken, user.ID); err != nil {
+	if err := c.redis.HDel(r.Context(), TokensTable, user.ID); err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -238,7 +240,7 @@ func (c *Config) handlerUpdateUser(w http.ResponseWriter, r *http.Request, user 
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := c.redis.HSet(r.Context(), HUsers, user.ID, newUser).Err(); err != nil {
+	if err := c.redis.HSet(r.Context(), UsersTable, user.ID, newUser).Err(); err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -251,7 +253,7 @@ func (c *Config) handlerUpdateUser(w http.ResponseWriter, r *http.Request, user 
 	})
 }
 
-func (c *Config) handlerRegisterLibrary(w http.ResponseWriter, r *http.Request, user *User) {
+func (c *Config) handlerCreateLibrary(w http.ResponseWriter, r *http.Request, user *User) {
 	type parameters struct {
 		Title   string `json:"title"`
 		Private bool   `json:"private"`
@@ -265,6 +267,112 @@ func (c *Config) handlerRegisterLibrary(w http.ResponseWriter, r *http.Request, 
 		respondWithJSON(w, http.StatusBadRequest, "invalid input")
 		return
 	}
+	lib, err := c.CreateLibrary(r.Context(), params.Private, params.Title, user.ID)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	respondWithJSON(w, http.StatusCreated, lib)
+}
+
+func (c *Config) handlerGetUsersLibraries(w http.ResponseWriter, r *http.Request, user *User) {
+	libs, err := c.GetUsersLibraries(r.Context(), user)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "couldn't retrieve libraries")
+		return
+	}
+	respondWithJSON(w, http.StatusAccepted, libs)
+}
+
+func (c *Config) handlerGetLibrary(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	owner, private, err := parsedLibraryID(id)
+	if err != nil {
+		respondWithJSON(w, http.StatusBadRequest, "invalid url parameter")
+		return
+	}
+	userId, err := auth.AuthorizeJWT(r.Header, c.jwtSecret)
+	if err != nil && private {
+		respondWithJSON(w, http.StatusUnauthorized, "couldn't retrieve library")
+		return
+	}
+	if private && userId != owner {
+		respondWithJSON(w, http.StatusUnauthorized, "no access")
+		return
+	}
+	data, err := c.redis.HGet(r.Context(), LibsTable, id).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			respondWithJSON(w, http.StatusNoContent, "unknown id")
+		} else {
+			respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	var lib Library
+	if err := json.Unmarshal(data, &lib); err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	var partialContent bool
+	trackedList := make([]Tracked, len(lib.TrackerIDs))
+	for i, id := range lib.TrackerIDs {
+		tracker, err := c.GetBookTracker(r.Context(), id)
+		if err != nil {
+			if !errors.Is(err, redis.Nil) {
+				respondWithJSON(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			slog.Error("error getting tracker :", "error", err)
+			partialContent = true
+		} else {
+			trackedList[i] = tracker
+		}
+	}
+	type response struct {
+		ID        string
+		Owner     string
+		Title     string
+		CreatedAt string
+		UpdatedAt string
+		Tracked   []Tracked
+		Private   bool
+	}
+	status := http.StatusAccepted
+	if partialContent {
+		status = http.StatusPartialContent
+	}
+	respondWithJSON(w, status, response{
+		ID:        lib.ID,
+		Owner:     lib.Owner,
+		Title:     lib.Title,
+		CreatedAt: lib.CreatedAt,
+		UpdatedAt: lib.UpdatedAt,
+		Tracked:   trackedList,
+		Private:   lib.Private,
+	})
+}
+
+func (c *Config) handlerDeleteLibrary(w http.ResponseWriter, r *http.Request, user *User) {
+	id := chi.URLParam(r, "id")
+	owner, _, err := parsedLibraryID(id)
+	if err != nil {
+		respondWithJSON(w, http.StatusBadRequest, "malformed id")
+		return
+	}
+	if owner != user.ID {
+		respondWithJSON(w, http.StatusUnauthorized, "no access")
+		return
+	}
+	if err := c.redis.HDel(r.Context(), LibsTable, id).Err(); err != nil {
+		if errors.Is(err, redis.Nil) {
+			respondWithJSON(w, http.StatusNotFound, "couldn't retrieve library")
+		} else {
+			respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	emptyResponse(w)
 }
 
 func (c *Config) handlerReadiness(w http.ResponseWriter, r *http.Request) {
