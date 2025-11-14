@@ -33,9 +33,8 @@ func (c *Config) middlewareAuth(authFunc AuthedHandler) http.HandlerFunc {
 			}
 			r.Header.Set("Authorization", auth.BearerJWT(jwtToken))
 		}
-		user, err := c.GetUser(ctx, id)
+		user, err := HGetDecoded[User](ctx, c.redis, UsersTable, id)
 		if err != nil {
-			respondWithJSON(w, http.StatusInternalServerError, "couldn't retrieve user")
 			return
 		}
 		authFunc(w, r, &user)

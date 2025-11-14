@@ -26,26 +26,27 @@ type Book struct {
 }
 
 type Library struct {
-	ID         string
-	Owner      string
-	Title      string
-	CreatedAt  string
-	UpdatedAt  string
-	TrackerIDs []string
-	Private    bool
+	ID        string
+	Owner     string
+	Title     string
+	CreatedAt string
+	UpdatedAt string
+	BookIDs   []string
+	Private   bool
 }
 
-type Tracker struct {
+type Review struct {
 	BookID      string
 	UserID      string
+	Description string
 	Status      Status
 	Note        int
 	CurrentPage int
 }
 
-type Tracked struct {
-	Book    Book
-	Tracker Tracker
+type Tracker struct {
+	Book   Book
+	Review Review
 }
 
 func (s Status) String() string {

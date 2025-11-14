@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -16,14 +17,17 @@ import (
 )
 
 const (
-	UsersTable    = "USERS"
-	TokensTable   = "TOKENS"
-	KeysTable     = "KEYS"
-	LibsTable     = "LIBRARIES"
-	BooksTable    = "BOOKS"
-	TrackersTable = "TRACKERS"
+	UsersTable      = "USERS"
+	TokensTable     = "TOKENS"
+	KeysTable       = "KEYS"
+	LibsTable       = "LIBRARIES"
+	BooksTable      = "BOOKS"
+	ReviewsTable    = "REVIEWS"
+	AllBooksTable   = "ALLBOOKS"
+	CategoriesTable = "CATEGORIES"
 
-	Sep = ":"
+	timeout = time.Second * 10
+	Sep     = ":"
 )
 
 var ErrExist = errors.New("target already exists")
@@ -65,16 +69,27 @@ func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
 	return nil
 }
 
-func (c *Config) GetUser(ctx context.Context, id string) (User, error) {
-	data, err := c.redis.HGet(ctx, UsersTable, id).Bytes()
+func HGetDecoded[T any](ctx context.Context, rdb *redis.Client, table, key string) (T, error) {
+	var payload T
+	data, err := rdb.HGet(ctx, table, key).Bytes()
 	if err != nil {
-		return User{}, err
+		return payload, err
 	}
-	var user User
-	if err := json.Unmarshal(data, &user); err != nil {
-		return User{}, err
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return payload, err
 	}
-	return user, nil
+	return payload, nil
+}
+
+func (c *Config) HSetEncoded(ctx context.Context, table, key string, payload any) error {
+	data, err := json.Marshal(&payload)
+	if err != nil {
+		return err
+	}
+	if err := c.redis.HSet(ctx, table, key, data).Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Config) DeleteUser(ctx context.Context, user *User) error {
@@ -97,7 +112,7 @@ func EncodeToString(elems []string) string {
 	return hex.EncodeToString(key[:])[:12]
 }
 
-func (c *Config) newRefreshToken(ctx context.Context, id string) (string, error) {
+func (c *Config) updateRefreshToken(ctx context.Context, id string) (string, error) {
 	token, err := auth.GenerateRefreshToken()
 	if err != nil {
 		return "", err
@@ -127,82 +142,52 @@ func (c *Config) CreateLibrary(ctx context.Context, private bool, title, userId 
 		return Library{}, ErrExist
 	}
 	lib := Library{
-		ID:         id,
-		Owner:      userId,
-		Title:      title,
-		CreatedAt:  createdAt,
-		UpdatedAt:  createdAt,
-		TrackerIDs: make([]string, 0),
-		Private:    private,
+		ID:        id,
+		Owner:     userId,
+		Title:     title,
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+		BookIDs:   make([]string, 0),
+		Private:   private,
 	}
-	data, err := json.Marshal(&lib)
-	if err != nil {
-		return Library{}, err
-	}
-	if err := c.redis.HSet(ctx, LibsTable, id, data).Err(); err != nil {
+	if err := c.HSetEncoded(ctx, LibsTable, id, lib); err != nil {
 		return Library{}, err
 	}
 	return lib, nil
 }
 
-func (c *Config) GetUsersLibraries(ctx context.Context, user *User) ([]Library, error) {
+func (c *Config) HScanKeys(ctx context.Context, table, key string, limit int) ([]string, error) {
 	var (
 		allKeys []string
 		cursor  uint64
 		err     error
 	)
-	usersMatch := strings.Join([]string{user.ID, "*"}, "")
+	if limit <= 0 {
+		limit = math.MaxInt64
+	}
+	match := fmt.Sprintf("*%s*", key)
 	for {
 		var (
 			keys []string
 			next uint64
 		)
-		keys, next, err = c.redis.HScan(ctx, LibsTable, cursor, usersMatch, 100).Result()
+
+		keys, next, err = c.redis.HScanNoValues(ctx, table, cursor, match, 100).Result()
 		if err != nil {
-			return []Library{}, err
+			return []string{}, err
 		}
-		allKeys = append(allKeys, keys...)
-		if cursor == 0 {
+		for _, key := range keys {
+			allKeys = append(allKeys, key)
+			if len(allKeys) >= limit {
+				break
+			}
+		}
+		if next == 0 {
 			break
 		}
 		cursor = next
 	}
-	libs := make([]Library, len(allKeys))
-	for i, key := range allKeys {
-		data, err := c.redis.HGet(ctx, LibsTable, key).Bytes()
-		if err != nil {
-			return []Library{}, err
-		}
-		var lib Library
-		if err := json.Unmarshal(data, &lib); err != nil {
-			return []Library{}, err
-		}
-		libs[i] = lib
-	}
-	return libs, nil
-}
-
-func (c *Config) GetBookTracker(ctx context.Context, id string) (Tracked, error) {
-	data, err := c.redis.HGet(ctx, TrackersTable, id).Bytes()
-	if err != nil {
-		return Tracked{}, err
-	}
-	var tracker Tracker
-	if err := json.Unmarshal(data, &tracker); err != nil {
-		return Tracked{}, err
-	}
-	data, err = c.redis.HGet(ctx, BooksTable, tracker.BookID).Bytes()
-	if err != nil {
-		return Tracked{}, err
-	}
-	var book Book
-	if err := json.Unmarshal(data, &book); err != nil {
-		return Tracked{}, err
-	}
-	return Tracked{
-		Book:    book,
-		Tracker: tracker,
-	}, nil
+	return allKeys, nil
 }
 
 func parsedLibraryID(id string) (string, bool, error) {
@@ -227,4 +212,24 @@ func boolToString(s string) (bool, error) {
 		return false, fmt.Errorf("invalid input : %v", s)
 	}
 	return b, nil
+}
+
+func stringToBool(b bool) string {
+	m := map[bool]string{
+		false: "0",
+		true:  "1",
+	}
+	return m[b]
+}
+
+func validateURLParam(param string) error {
+	if param == "" {
+		return fmt.Errorf("empty url parameter")
+	}
+	for _, c := range param {
+		if c < 33 || c > 126 {
+			return fmt.Errorf("invalid title character : %v", c)
+		}
+	}
+	return nil
 }
