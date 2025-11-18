@@ -2,8 +2,6 @@ package main
 
 import "strings"
 
-type BookID string
-
 type Status uint32
 
 const (
@@ -14,15 +12,17 @@ const (
 )
 
 type Book struct {
-	Id            string
-	Title         string
-	Description   string
-	Authors       []string
-	Publishers    []string
-	PublishedAt   string
-	PageCount     int
-	MainCategory  string
-	SubCategories []string
+	ID   string `json:"id"`
+	Info struct {
+		Title         string   `json:"title"`
+		Authors       []string `json:"authors"`
+		Publisher     string   `json:"publisher"`
+		PublishedDate string   `json:"publishedDate"`
+		Description   string   `json:"description"`
+		PageCount     int      `json:"pageCount"`
+		MainCategory  string   `json:"mainCategory"`
+		Categories    []string `json:"categories"`
+	} `json:"volumeInfo"`
 }
 
 type Library struct {
@@ -39,9 +39,12 @@ type Review struct {
 	BookID      string
 	UserID      string
 	Description string
+	CreatedAt   string
+	UpdatedAt   string
 	Status      Status
 	Note        int
 	CurrentPage int
+	Private     bool
 }
 
 type Tracker struct {

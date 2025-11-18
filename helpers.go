@@ -5,11 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,17 +16,23 @@ import (
 )
 
 const (
+	// Hash key : values
 	UsersTable      = "USERS"
 	TokensTable     = "TOKENS"
 	KeysTable       = "KEYS"
 	LibsTable       = "LIBRARIES"
 	BooksTable      = "BOOKS"
 	ReviewsTable    = "REVIEWS"
-	AllBooksTable   = "ALLBOOKS"
 	CategoriesTable = "CATEGORIES"
 
-	timeout = time.Second * 10
-	Sep     = ":"
+	// Key : keys
+	BookKeys   = "ALLBOOKS"
+	ReviewKeys = "ALLREVIEWS"
+
+	timeout   = time.Second * 10
+	pageLimit = 20
+
+	Sep = ":"
 )
 
 var ErrExist = errors.New("target already exists")
@@ -69,29 +74,6 @@ func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
 	return nil
 }
 
-func HGetDecoded[T any](ctx context.Context, rdb *redis.Client, table, key string) (T, error) {
-	var payload T
-	data, err := rdb.HGet(ctx, table, key).Bytes()
-	if err != nil {
-		return payload, err
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return payload, err
-	}
-	return payload, nil
-}
-
-func (c *Config) HSetEncoded(ctx context.Context, table, key string, payload any) error {
-	data, err := json.Marshal(&payload)
-	if err != nil {
-		return err
-	}
-	if err := c.redis.HSet(ctx, table, key, data).Err(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (c *Config) DeleteUser(ctx context.Context, user *User) error {
 	idKey := EncodeToString([]string{user.Email, user.Username})
 	emailKey := EncodeToString([]string{user.Email})
@@ -126,15 +108,30 @@ func (c *Config) updateRefreshToken(ctx context.Context, id string) (string, err
 	return token, nil
 }
 
-func (c *Config) CreateLibrary(ctx context.Context, private bool, title, userId string) (Library, error) {
-	p := "0"
-	if private {
-		p = "1"
+func (c *Config) CreateBook(ctx context.Context, book *Book) error {
+	if err := c.HSetEncoded(ctx, BooksTable, book.ID, book); err != nil {
+		return err
 	}
-	createdAt := time.Now().String()
-	id := EncodeToString([]string{title, createdAt})
-	id = strings.Join([]string{userId, id, p}, Sep)
-	if err := c.redis.HGet(ctx, LibsTable, id).Err(); err != nil {
+	if err := c.KeysAppend(ctx, BookKeys, book.ID); err != nil {
+		return err
+	}
+	categories := append(book.Info.Categories, book.Info.MainCategory)
+	for _, cat := range categories {
+		if err := c.HKeysAppend(ctx, CategoriesTable, cat, book.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Config) CreateLibrary(ctx context.Context, private bool, title, userId string) (Library, error) {
+	var (
+		createdAt = time.Now().String()
+		id        = EncodeToString([]string{title, createdAt})
+		p         = boolToString(private)
+	)
+	libId := strings.Join([]string{p, userId, id}, Sep)
+	if err := c.redis.HGet(ctx, LibsTable, libId).Err(); err != nil {
 		if !errors.Is(err, redis.Nil) {
 			return Library{}, err
 		}
@@ -156,53 +153,23 @@ func (c *Config) CreateLibrary(ctx context.Context, private bool, title, userId 
 	return lib, nil
 }
 
-func (c *Config) HScanKeys(ctx context.Context, table, key string, limit int) ([]string, error) {
-	var (
-		allKeys []string
-		cursor  uint64
-		err     error
-	)
-	if limit <= 0 {
-		limit = math.MaxInt64
-	}
-	match := fmt.Sprintf("*%s*", key)
-	for {
-		var (
-			keys []string
-			next uint64
-		)
-
-		keys, next, err = c.redis.HScanNoValues(ctx, table, cursor, match, 100).Result()
-		if err != nil {
-			return []string{}, err
-		}
-		for _, key := range keys {
-			allKeys = append(allKeys, key)
-			if len(allKeys) >= limit {
-				break
-			}
-		}
-		if next == 0 {
-			break
-		}
-		cursor = next
-	}
-	return allKeys, nil
-}
-
-func parsedLibraryID(id string) (string, bool, error) {
+func parsedId(id string) (string, bool, error) {
 	split := strings.Split(id, Sep)
 	if len(split) != 3 {
 		return "", false, fmt.Errorf("invalid id")
 	}
-	private, err := boolToString(split[2])
+	private, err := stringToBool(split[2])
 	if err != nil {
 		return "", false, err
 	}
-	return split[0], private, nil
+	return split[1], private, nil
 }
 
-func boolToString(s string) (bool, error) {
+func formatId(userId, id string) string {
+	return strings.Join([]string{userId, id}, Sep)
+}
+
+func stringToBool(s string) (bool, error) {
 	m := map[string]bool{
 		"1": true,
 		"0": false,
@@ -214,7 +181,7 @@ func boolToString(s string) (bool, error) {
 	return b, nil
 }
 
-func stringToBool(b bool) string {
+func boolToString(b bool) string {
 	m := map[bool]string{
 		false: "0",
 		true:  "1",
@@ -222,14 +189,35 @@ func stringToBool(b bool) string {
 	return m[b]
 }
 
+func parseURLQueryInt(q string) (int, error) {
+	var (
+		n   int
+		err error
+	)
+	if q != "" {
+		n, err = strconv.Atoi(q)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n, nil
+}
+
 func validateURLParam(param string) error {
 	if param == "" {
 		return fmt.Errorf("empty url parameter")
 	}
 	for _, c := range param {
-		if c < 33 || c > 126 {
+		if c < 32 || c > 126 {
 			return fmt.Errorf("invalid title character : %v", c)
 		}
 	}
 	return nil
+}
+
+func formatFetchURLById(id string) string {
+	return fmt.Sprintf("https://www.googleapis.com/books/v1/volumes/%s", id)
 }

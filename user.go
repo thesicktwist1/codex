@@ -1,7 +1,5 @@
 package main
 
-const ()
-
 type User struct {
 	ID             string
 	Username       string

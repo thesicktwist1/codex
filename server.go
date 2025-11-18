@@ -14,6 +14,7 @@ const (
 type Config struct {
 	redis      *redis.Client
 	server     http.Server
+	client     http.Client
 	jwtSecret  string
 	hmacSecret []byte
 }
@@ -48,6 +49,25 @@ func (c *Config) setupMux() {
 	mux.Get("/libraries", c.middlewareAuth(c.handlerGetUsersLibraries))
 	mux.Get("/libraries/{id}", c.handlerGetLibrary)
 	mux.Delete("/libraries/{id}", c.middlewareAuth(c.handlerDeleteLibrary))
+
+	// books handling
+	mux.Get("/books", c.handlerGetBooks)
+	mux.Get("/books/{id}/reviews", c.handlerGetReviewsByBookId)
+
+	mux.Get("/book/{id}", c.handlerGetBookById)
+
+	// reviews handling
+
+	mux.Post("/review/{bookId}", c.middlewareAuth(c.handlerCreateReview))
+	mux.Delete("/review/{bookId}", c.middlewareAuth(c.handlerDeleteReview))
+	mux.Put("/review/{bookId}", c.middlewareAuth(c.handlerUpdateReview))
+	mux.Get("/review/{id}", c.handlerGetReviewById)
+
+	mux.Get("/tracked", c.middlewareAuth(c.handlerGetTracked))
+
+	// fetch handling
+	mux.Get("/fetch/books", c.handlerFetchBookListQueries)
+	mux.Get("/fetch/book/{id}", c.handlerFetchBookById)
 
 	// server readiness
 	mux.Get("/healthz", c.handlerReadiness)
