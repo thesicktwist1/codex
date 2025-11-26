@@ -25,7 +25,7 @@ const (
 	titleMaxLen = 48
 
 	nameMinLen = 8
-	nameMaxLen = 18
+	nameMaxLen = 16
 
 	Bearer = "Bearer"
 )
@@ -156,7 +156,7 @@ func IsValidTitle(title string) error {
 			titleMaxLen)
 	}
 	for _, c := range title {
-		if c < 33 || c > 126 {
+		if c < 32 || c > 126 {
 			return fmt.Errorf("invalid title character : %v", c)
 		}
 	}
@@ -214,17 +214,13 @@ func IsValidPassword(pw string) error {
 }
 
 func IsValidKey(key string) error {
-	var valid bool
 	if err := isValidEmail(key); err == nil {
-		valid = true
+		return nil
 	}
 	if err := isValidUsername(key); err == nil {
-		valid = true
+		return nil
 	}
-	if !valid {
-		return fmt.Errorf("invalid key")
-	}
-	return nil
+	return fmt.Errorf("invalid key")
 }
 
 func isValidUsername(username string) error {
@@ -232,7 +228,7 @@ func isValidUsername(username string) error {
 		return fmt.Errorf("username must contain between %d and %d characters", nameMinLen, nameMaxLen)
 	}
 	for _, c := range username {
-		if !unicode.IsDigit(c) || !unicode.IsLetter(c) {
+		if !unicode.IsDigit(c) && !unicode.IsLetter(c) {
 			return fmt.Errorf("username must only contain digits or letters")
 		}
 	}
