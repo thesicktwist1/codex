@@ -1,9 +1,12 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -259,7 +262,6 @@ func Test_getBearerToken(t *testing.T) {
 	}
 }
 
-/*
 func Test_RegisterValidation(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -268,7 +270,106 @@ func Test_RegisterValidation(t *testing.T) {
 		email    string
 		wantErr  bool
 	}{
-		{},
+		{
+			name:     "valid",
+			username: "example4351",
+			password: "MYpassword204",
+			email:    "example@gmail.com",
+		},
+		{
+			name:     "invalid (no email)",
+			username: "example2431",
+			password: "MYpassword241",
+			email:    "",
+			wantErr:  true,
+		},
+	}
+	for _, tc := range tests {
+		err := RegisterValidation(tc.username,
+			tc.password,
+			tc.email)
+		if tc.wantErr {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
+		}
 	}
 }
-*/
+
+func Test_AuthorizeJWT(t *testing.T) {
+	tests := []struct {
+		name      string
+		wantId    string
+		expiresAt time.Time
+		issuedAt  time.Time
+		secret    string
+		wantErr   bool
+		errType   error
+	}{
+		{
+			name:      "valid token",
+			wantId:    "userexample123",
+			expiresAt: time.Now().Add(time.Hour),
+			issuedAt:  time.Now(),
+			secret:    "D1s9fA7kL0qP3vX8Rz2M4bN6TgH5yWcQ",
+		},
+		{
+			name:      "expired token(should return the user id)",
+			wantId:    "userexample123",
+			expiresAt: time.Now().Add(-time.Minute),
+			issuedAt:  time.Now().Add(-time.Hour),
+			secret:    "D1s9fA7kL0qP3vX8Rz2M4bN6TgH5yWcQ",
+			wantErr:   true,
+			errType:   jwt.ErrTokenExpired,
+		},
+		{
+			name:      "invalid token(not valid yet)",
+			wantId:    "userexample123",
+			expiresAt: time.Now().Add(time.Hour * 2),
+			issuedAt:  time.Now().Add(time.Hour),
+			secret:    "D1s9fA7kL0qP3vX8Rz2M4bN6TgH5yWcQ",
+			wantErr:   true,
+			errType:   jwt.ErrTokenNotValidYet,
+		},
+		{
+			name:      "invalid token(empty subject)",
+			wantId:    "",
+			expiresAt: time.Now().Add(time.Hour),
+			issuedAt:  time.Now(),
+			secret:    "D1s9fA7kL0qP3vX8Rz2M4bN6TgH5yWcQ",
+			wantErr:   true,
+			errType:   jwt.ErrTokenInvalidSubject,
+		},
+	}
+	for _, tc := range tests {
+		tkn := jwt.NewWithClaims(
+			jwt.SigningMethodHS256, jwt.RegisteredClaims{
+				Subject:   tc.wantId,
+				ExpiresAt: jwt.NewNumericDate(tc.expiresAt),
+				IssuedAt:  jwt.NewNumericDate(tc.issuedAt),
+			})
+		token, err := tkn.SignedString([]byte(tc.secret))
+		require.NoError(t, err)
+		gotId, err := AuthorizeJWT(http.Header{
+			"Authorization": []string{"Bearer " + token},
+		}, tc.secret)
+		if tc.wantErr {
+			require.Error(t, err)
+			if errors.Is(err, jwt.ErrTokenExpired) {
+				require.Equal(t, tc.wantId, gotId)
+			} else {
+				require.ErrorIsf(t, err, tc.errType, err.Error())
+			}
+		} else {
+			require.NoError(t, err)
+			require.Equal(t, tc.wantId, gotId)
+		}
+	}
+}
+
+func Test_BearerJWT(t *testing.T) {
+	token := "tokenExample"
+	want := "Bearer tokenExample"
+	got := BearerJWT(token)
+	require.Equal(t, want, got)
+}

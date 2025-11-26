@@ -89,15 +89,15 @@ func AuthorizeJWT(header http.Header, jwtSecret string) (string, error) {
 	}
 	sub, err := t.Claims.GetSubject()
 	if err != nil || sub == "" {
-		return "", err
+		return "", jwt.ErrTokenInvalidSubject
 	}
 	issuedAt, err := t.Claims.GetIssuedAt()
 	if err != nil {
-		return "", err
+		return "", jwt.ErrTokenMalformed
 	}
 	exp, err := t.Claims.GetExpirationTime()
 	if err != nil {
-		return "", err
+		return "", jwt.ErrTokenMalformed
 	}
 	if issuedAt.After(exp.Time) || issuedAt.After(time.Now()) {
 		return "", jwt.ErrTokenNotValidYet
@@ -114,7 +114,7 @@ func GenerateJWT(jwtSecret, userID string) (string, error) {
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	})
-	return token.SignedString(jwtSecret)
+	return token.SignedString([]byte(jwtSecret))
 }
 
 func IsValidRefreshToken(token, storedToken string, secret []byte) bool {
