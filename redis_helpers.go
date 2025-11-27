@@ -135,3 +135,11 @@ func (c *Config) HSetEncoded(ctx context.Context, table, key string, payload any
 	}
 	return c.redis.HSet(ctx, table, key, data).Err()
 }
+
+func (c *Config) HSetNXEncoded(ctx context.Context, table, key string, payload any) error {
+	data, err := json.Marshal(&payload)
+	if err != nil {
+		return err
+	}
+	return c.redis.HSetNX(ctx, table, key, data).Err()
+}

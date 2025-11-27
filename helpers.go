@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -89,11 +91,6 @@ func (c *Config) DeleteUser(ctx context.Context, user *User) error {
 	return c.redis.HDel(ctx, KeysTable, emailKey, userKey).Err()
 }
 
-func EncodeToString(elems []string) string {
-	key := sha256.Sum256([]byte(strings.Join(elems, "")))
-	return hex.EncodeToString(key[:])[:12]
-}
-
 func (c *Config) updateRefreshToken(ctx context.Context, id string) (string, error) {
 	token, err := auth.GenerateRefreshToken()
 	if err != nil {
@@ -131,15 +128,8 @@ func (c *Config) CreateLibrary(ctx context.Context, private bool, title, userId 
 		p         = boolToString(private)
 	)
 	libId := strings.Join([]string{p, userId, id}, Sep)
-	if err := c.redis.HGet(ctx, LibsTable, libId).Err(); err != nil {
-		if !errors.Is(err, redis.Nil) {
-			return Library{}, err
-		}
-	} else {
-		return Library{}, ErrExist
-	}
 	lib := Library{
-		ID:        id,
+		ID:        libId,
 		Owner:     userId,
 		Title:     title,
 		CreatedAt: createdAt,
@@ -147,10 +137,12 @@ func (c *Config) CreateLibrary(ctx context.Context, private bool, title, userId 
 		BookIDs:   make([]string, 0),
 		Private:   private,
 	}
-	if err := c.HSetEncoded(ctx, LibsTable, id, lib); err != nil {
-		return Library{}, err
-	}
 	return lib, nil
+}
+
+func EncodeToString(elems []string) string {
+	key := sha256.Sum256([]byte(strings.Join(elems, "")))
+	return hex.EncodeToString(key[:])[:12]
 }
 
 func parsedId(id string) (string, bool, error) {
@@ -158,11 +150,14 @@ func parsedId(id string) (string, bool, error) {
 	if len(split) != 3 {
 		return "", false, fmt.Errorf("invalid id")
 	}
-	private, err := stringToBool(split[2])
+	private, err := stringToBool(split[1])
 	if err != nil {
 		return "", false, err
 	}
-	return split[1], private, nil
+	if slices.Contains(split, "") {
+		return "", false, fmt.Errorf("malformed id")
+	}
+	return split[0], private, nil
 }
 
 func formatId(userId, id string) string {
@@ -201,7 +196,7 @@ func parseURLQueryInt(q string) (int, error) {
 		}
 	}
 	if n < 1 {
-		n = 1
+		n = int(math.Abs(float64(n)))
 	}
 	return n, nil
 }
@@ -211,7 +206,7 @@ func validateURLParam(param string) error {
 		return fmt.Errorf("empty url parameter")
 	}
 	for _, c := range param {
-		if c < 32 || c > 126 {
+		if c < 33 || c > 126 {
 			return fmt.Errorf("invalid title character : %v", c)
 		}
 	}

@@ -275,6 +275,10 @@ func (c *Config) handlerCreateLibrary(w http.ResponseWriter, r *http.Request, us
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if err := c.HSetEncoded(ctx, LibsTable, lib.ID, lib); err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	respondWithJSON(w, http.StatusCreated, lib)
 }
 
@@ -737,6 +741,35 @@ func (c *Config) handlerFetchBookById(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Config) handlerFetchBookListQueries(w http.ResponseWriter, r *http.Request) {
-	_ = r.URL.Query()
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	queries := r.URL.Query().Encode()
+	if err := validateURLParam(queries); err != nil {
+		respondWithJSON(w, http.StatusBadRequest, "invalid queries")
+		return
+	}
+	//url := formatFetchURLByQueries(queries)
+	url := ""
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respondWithJSON(w, resp.StatusCode, "external api error")
+		return
+	}
+	var bookList BookList
+	if err := json.NewDecoder(resp.Body).Decode(&bookList); err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	respondWithJSON(w, http.StatusOK, bookList)
 
 }
