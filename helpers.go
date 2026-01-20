@@ -28,8 +28,11 @@ const (
 	CategoriesTable = "CATEGORIES"
 
 	// Key : keys
-	BookKeys   = "ALLBOOKS"
-	ReviewKeys = "ALLREVIEWS"
+	BookKeys    = "ALLBOOKS"
+	ReviewKeys  = "ALLREVIEWS"
+	ID          = "ID"
+	UsernameKey = "USERNAMEKEY"
+	EmailKey    = "EMAILKEY"
 
 	timeout   = time.Second * 10
 	pageLimit = 20
@@ -39,17 +42,12 @@ const (
 
 var ErrExist = errors.New("target already exists")
 
-func (c *Config) NewUserKeys(ctx context.Context, email, username string) (string, error) {
-	id := EncodeToString([]string{email, username})
-	emailKey := EncodeToString([]string{email})
-	userKey := EncodeToString([]string{username})
-	if err := c.redis.HSet(ctx, KeysTable, map[string]any{
-		emailKey: id,
-		userKey:  id,
-	}).Err(); err != nil {
+func (c *Config) GenerateUserKeys(ctx context.Context, email, username string) (string, error) {
+	keys := generateKeys(email, username)
+	if err := c.redis.HSet(ctx, KeysTable, keys).Err(); err != nil {
 		return "", err
 	}
-	return id, nil
+	return keys[EncodeToString([]string{email})], nil
 }
 
 func (c *Config) authorizeRefreshToken(ctx context.Context, header http.Header, id string) error {
@@ -69,8 +67,13 @@ func (c *Config) authorizeRefreshToken(ctx context.Context, header http.Header, 
 
 func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
 	for _, key := range keys {
-		if err := c.redis.HExists(ctx, KeysTable, key).Err(); err == nil {
-			return fmt.Errorf("key: %v already exist", key)
+		encodedKey := EncodeToString([]string{key})
+		exist, err := c.redis.HExists(ctx, KeysTable, encodedKey).Result()
+		if err != nil {
+			return err
+		}
+		if exist {
+			return fmt.Errorf("key already exist")
 		}
 	}
 	return nil
@@ -97,7 +100,7 @@ func (c *Config) updateRefreshToken(ctx context.Context, id string) (string, err
 		return "", err
 	}
 	hash := auth.HashRefreshToken(token, c.hmacSecret)
-	if err := c.redis.HSet(ctx, TokensTable, map[string]any{
+	if err := c.redis.HSet(ctx, TokensTable, map[string]string{
 		id: hash,
 	}).Err(); err != nil {
 		return "", err
@@ -189,7 +192,7 @@ func parseURLQueryInt(q string) (int, error) {
 		n   int
 		err error
 	)
-	if q != "" {
+	if len(q) != 0 {
 		n, err = strconv.Atoi(q)
 		if err != nil {
 			return 0, err
@@ -202,7 +205,7 @@ func parseURLQueryInt(q string) (int, error) {
 }
 
 func validateURLParam(param string) error {
-	if param == "" {
+	if len(param) == 0 {
 		return fmt.Errorf("empty url parameter")
 	}
 	for _, c := range param {
@@ -213,6 +216,20 @@ func validateURLParam(param string) error {
 	return nil
 }
 
-func formatFetchURLById(id string) string {
+func generateKeys(email string, username string) map[string]string {
+	id := EncodeToString([]string{email, username})
+	emailKey := EncodeToString([]string{email})
+	usernameKey := EncodeToString([]string{username})
+	return map[string]string{
+		emailKey:    id,
+		usernameKey: id,
+	}
+}
+
+func bookURL(id string) string {
 	return fmt.Sprintf("https://www.googleapis.com/books/v1/volumes/%s", id)
+}
+
+func bookListURL(queries string) string {
+	return fmt.Sprintf("%s", queries)
 }

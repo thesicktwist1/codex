@@ -88,7 +88,7 @@ func AuthorizeJWT(header http.Header, jwtSecret string) (string, error) {
 		return "", err
 	}
 	sub, err := t.Claims.GetSubject()
-	if err != nil || sub == "" {
+	if err != nil || len(sub) == 0 {
 		return "", jwt.ErrTokenInvalidSubject
 	}
 	issuedAt, err := t.Claims.GetIssuedAt()

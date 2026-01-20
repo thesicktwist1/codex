@@ -194,3 +194,14 @@ func Test_parsedId(t *testing.T) {
 		}
 	}
 }
+
+func Test_generateKeys(t *testing.T) {
+	email := "test@example.com"
+	username := "johnnytest34"
+	expected := map[string]string{
+		"973dfe463ec8": "cd7e97b3ff27",
+		"d7294d2ad4d4": "cd7e97b3ff27",
+	}
+	got := generateKeys(email, username)
+	require.Equal(t, expected, got)
+}

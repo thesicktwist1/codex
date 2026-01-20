@@ -34,15 +34,23 @@ func NewConfig(rdb *redis.Client, opts ...OptsFunc) *Config {
 	return c
 }
 
+func (c *Config) SetJWTSecret(secret string) {
+	c.jwtSecret = secret
+}
+
+func (c *Config) SetHMACSecret(secret []byte) {
+	c.hmacSecret = secret
+}
+
 func (c *Config) setupMux() {
 	mux := chi.NewMux()
 	// account handling
 	mux.Post("/register", c.handlerRegisterUser)
 	mux.Post("/revoke", c.middlewareAuth(c.handlerRevokeToken))
 	mux.Post("/login", c.handlerLogin)
-	mux.Delete("/users", c.middlewareAuth(c.handlerDeleteUser))
-	mux.Get("/users", c.middlewareAuth(c.handlerGetUser))
-	mux.Put("/users", c.middlewareAuth(c.handlerUpdateUser))
+	mux.Delete("/user", c.middlewareAuth(c.handlerDeleteUser))
+	mux.Get("/user", c.middlewareAuth(c.handlerGetUser))
+	mux.Put("/user", c.middlewareAuth(c.handlerUpdateUser))
 
 	// libraries handling
 	mux.Post("/libraries", c.middlewareAuth(c.handlerCreateLibrary))
@@ -66,7 +74,6 @@ func (c *Config) setupMux() {
 	mux.Get("/tracked", c.middlewareAuth(c.handlerGetTracked))
 
 	// fetch handling
-	mux.Get("/fetch/books", c.handlerFetchBookListQueries)
 	mux.Get("/fetch/book/{id}", c.handlerFetchBookById)
 
 	// server readiness

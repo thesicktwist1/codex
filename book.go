@@ -69,7 +69,7 @@ func (s Status) String() string {
 		b.WriteString("DID NOT FINISH")
 	}
 	if b.Len() == 0 {
-		return "[no status]"
+		b.WriteString("[NO STATUS]")
 	}
 	return b.String()
 }
