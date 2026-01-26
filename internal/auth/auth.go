@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,6 +27,8 @@ const (
 	nameMaxLen = 16
 
 	Bearer = "Bearer"
+
+	TokenExpirationTime = 72 * time.Hour
 )
 
 var (
@@ -80,32 +81,17 @@ func AuthorizeJWT(header http.Header, jwtSecret string) (string, error) {
 		return "", err
 	}
 	claims := jwt.RegisteredClaims{}
-	t, err := jwt.ParseWithClaims(tokenString, &claims,
+	token, err := jwt.ParseWithClaims(tokenString, &claims,
 		func(t *jwt.Token) (any, error) {
 			return []byte(jwtSecret), nil
 		})
-	if t == nil {
+	if err != nil {
 		return "", err
 	}
-	sub, err := t.Claims.GetSubject()
-	if err != nil || len(sub) == 0 {
-		return "", jwt.ErrTokenInvalidSubject
-	}
-	issuedAt, err := t.Claims.GetIssuedAt()
-	if err != nil {
+	if !token.Valid || claims.Subject == "" {
 		return "", jwt.ErrTokenMalformed
 	}
-	exp, err := t.Claims.GetExpirationTime()
-	if err != nil {
-		return "", jwt.ErrTokenMalformed
-	}
-	if issuedAt.After(exp.Time) || issuedAt.After(time.Now()) {
-		return "", jwt.ErrTokenNotValidYet
-	}
-	if time.Now().After(exp.Time) && issuedAt.Before(exp.Time) {
-		return sub, jwt.ErrTokenExpired
-	}
-	return sub, nil
+	return claims.Subject, nil
 }
 
 func GenerateJWT(jwtSecret, userID string) (string, error) {
@@ -115,11 +101,6 @@ func GenerateJWT(jwtSecret, userID string) (string, error) {
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	})
 	return token.SignedString([]byte(jwtSecret))
-}
-
-func IsValidRefreshToken(token, storedToken string, secret []byte) bool {
-	hashedToken := HashRefreshToken(token, secret)
-	return hmac.Equal([]byte(hashedToken), []byte(storedToken))
 }
 
 func GenerateRefreshToken() (string, error) {
@@ -143,10 +124,9 @@ func GetRefreshToken(header http.Header) (string, error) {
 	return token, nil
 }
 
-func HashRefreshToken(token string, secret []byte) string {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(token))
-	return hex.EncodeToString(mac.Sum(nil))
+func HashRefreshToken(token string) string {
+	hash := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(hash[:])
 }
 
 func IsValidTitle(title string) error {

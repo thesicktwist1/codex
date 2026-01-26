@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -148,53 +149,6 @@ func Test_formatId(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
-func Test_parsedId(t *testing.T) {
-	tests := []struct {
-		name        string
-		input       string
-		wantPrivate bool
-		wantIssuer  string
-		wantErr     bool
-	}{
-		{
-			name:        "basic id",
-			input:       "userid234:1:otherid",
-			wantPrivate: true,
-			wantIssuer:  "userid234",
-		},
-		{
-			name:    "last id missing",
-			input:   "userid234:1:",
-			wantErr: true,
-		},
-		{
-			name:    "malformed id (string bool missing)",
-			input:   "userid34::otherid",
-			wantErr: true,
-		},
-		{
-			name:    "malformed id (invalid string bool)",
-			input:   "userid242:15:otherid",
-			wantErr: true,
-		},
-		{
-			name:    "malformed id (reversed id)",
-			input:   "userid242:otherid:1",
-			wantErr: true,
-		},
-	}
-	for _, tc := range tests {
-		gotIssuer, gotPrivate, err := parsedId(tc.input)
-		if tc.wantErr {
-			require.Error(t, err)
-		} else {
-			require.NoError(t, err)
-			require.Equal(t, tc.wantIssuer, gotIssuer)
-			require.Equal(t, tc.wantPrivate, gotPrivate)
-		}
-	}
-}
-
 func Test_generateKeys(t *testing.T) {
 	email := "test@example.com"
 	username := "johnnytest34"
@@ -204,4 +158,19 @@ func Test_generateKeys(t *testing.T) {
 	}
 	got := generateKeys(email, username)
 	require.Equal(t, expected, got)
+}
+
+func Test_createLibrary(t *testing.T) {
+	config := NewConfig(setupRedis(t))
+	ctx := context.Background()
+
+	got, err := config.createLibrary(ctx, true, "Test Title 123", "userId23")
+	require.NoError(t, err)
+
+	require.Contains(t, got.ID, "1:userId23")
+	require.Equal(t, got.Owner, "userId23")
+	require.Equal(t, got.Title, "Test Title 123")
+	require.True(t, got.Private)
+	require.Empty(t, got.BookIDs)
+
 }

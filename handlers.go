@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -53,8 +54,7 @@ func (c *Config) handlerRegisterUser(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	// TODO: send confirmation email before
-	// creating user or something like that
+
 	createdAt := time.Now().String()
 	updatedAt := time.Now().String()
 
@@ -64,6 +64,7 @@ func (c *Config) handlerRegisterUser(w http.ResponseWriter, r *http.Request) {
 		HashedPassword: hash,
 		Email:          params.Email,
 		Username:       params.Username,
+		ID:             id,
 	}); err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
@@ -84,9 +85,6 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	var params parameters
 
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-
 	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
 		respondWithJSON(w, http.StatusBadRequest, "malformed payload")
 		return
@@ -95,7 +93,7 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusBadRequest, "invalid key")
 		return
 	}
-	id, err := c.redis.HGet(ctx, KeysTable,
+	id, err := c.redis.HGet(r.Context(), KeysTable,
 		EncodeToString([]string{params.Key})).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
@@ -106,9 +104,9 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := HGetDecoded[User](ctx, c.redis, UsersTable, id)
+	user, err := HGetDecoded[User](r.Context(), c.redis, UsersTable, id)
 	if err != nil {
-		respondWithJSON(w, http.StatusInternalServerError, "couldn't retrieve user")
+		respondWithJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword(user.HashedPassword, []byte(params.Password)); err != nil {
@@ -116,13 +114,23 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	refreshToken, err := c.updateRefreshToken(ctx, id)
+	refreshToken, err := auth.GenerateRefreshToken()
 	if err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	hashedToken := auth.HashRefreshToken(refreshToken)
+	if err := c.redis.SetEx(
+		r.Context(),
+		hashedToken,
+		user.ID,
+		auth.TokenExpirationTime,
+	).Err(); err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 
-	jwtToken, err := auth.GenerateJWT(c.jwtSecret, id)
+	jwtToken, err := auth.GenerateJWT(c.jwtSecret, user.ID)
 	if err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "error generating token")
 		return
@@ -143,6 +151,52 @@ func (c *Config) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (c *Config) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetRefreshToken(r.Header)
+	if err != nil {
+		respondWithJSON(w, http.StatusUnauthorized, "no token included")
+		return
+	}
+	hash := auth.HashRefreshToken(token)
+	userId, err := c.redis.GetDel(r.Context(), hash).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			respondWithJSON(w, http.StatusUnauthorized, "invalid credentials")
+		} else {
+			respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+
+	refreshToken, err := auth.GenerateRefreshToken()
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	hash = auth.HashRefreshToken(refreshToken)
+	if err := c.redis.SetEx(
+		r.Context(),
+		hash,
+		userId,
+		auth.TokenExpirationTime,
+	).Err(); err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	jwtToken, err := auth.GenerateJWT(c.jwtSecret, userId)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	respondWithJSON(w, http.StatusAccepted, map[string]string{
+		"refresh_token": refreshToken,
+		"token":         jwtToken,
+	})
+}
+
 func (c *Config) handlerDeleteUser(w http.ResponseWriter, r *http.Request, user *User) {
 	type parameters struct {
 		Password string `json:"password"`
@@ -158,20 +212,11 @@ func (c *Config) handlerDeleteUser(w http.ResponseWriter, r *http.Request, user 
 		respondWithJSON(w, http.StatusBadRequest, "invalid input")
 		return
 	}
-	userInfo, err := HGetDecoded[User](r.Context(), c.redis, UsersTable, user.ID)
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			respondWithJSON(w, http.StatusNotFound, "user doesn't exist")
-		} else {
-			respondWithJSON(w, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword(userInfo.HashedPassword, []byte(params.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword(user.HashedPassword, []byte(params.Password)); err != nil {
 		respondWithJSON(w, http.StatusUnauthorized, "password doesn't match")
 		return
 	}
-	if err := c.DeleteUser(ctx, &userInfo); err != nil {
+	if err := c.DeleteUser(ctx, user); err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -179,25 +224,13 @@ func (c *Config) handlerDeleteUser(w http.ResponseWriter, r *http.Request, user 
 }
 
 func (c *Config) handlerRevokeToken(w http.ResponseWriter, r *http.Request, user *User) {
-	currentToken, err := auth.GetRefreshToken(r.Header)
+	token, err := auth.GetRefreshToken(r.Header)
 	if err != nil {
 		respondWithJSON(w, http.StatusNoContent, "invalid credentials")
 		return
 	}
-	storedToken, err := c.redis.HGet(r.Context(), TokensTable, user.ID).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			respondWithJSON(w, http.StatusBadRequest, "invalid credentials")
-		} else {
-			respondWithJSON(w, http.StatusInternalServerError, "internal error")
-		}
-		return
-	}
-	if !auth.IsValidRefreshToken(currentToken, storedToken, c.hmacSecret) {
-		respondWithJSON(w, http.StatusUnauthorized, "invalid credentials")
-		return
-	}
-	if err := c.redis.HDel(r.Context(), TokensTable, user.ID).Err(); err != nil {
+	hash := auth.HashRefreshToken(token)
+	if _, err := c.redis.Del(r.Context(), hash).Result(); err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -210,21 +243,26 @@ func (c *Config) handlerUpdateUser(w http.ResponseWriter, r *http.Request, user 
 		NewPassword string `json:"new_password"`
 	}
 	var params parameters
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
 	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
 		respondWithJSON(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword(
-		user.HashedPassword,
-		[]byte(params.Password),
-	); err != nil {
-		respondWithJSON(w, http.StatusUnauthorized, "invalid password")
-		return
-	}
 	if err := auth.IsValidPassword(params.NewPassword); err != nil {
 		respondWithJSON(w, http.StatusBadRequest, "invalid input")
+		return
+	}
+	if err := auth.IsValidPassword(params.Password); err != nil {
+		respondWithJSON(w, http.StatusBadRequest, "invalid input")
+		return
+	}
+	user, err := HGetDecoded[*User](r.Context(), c.redis, UsersTable, user.ID)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "couldn't retrieve user")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword(
+		user.HashedPassword, []byte(params.Password)); err != nil {
+		respondWithJSON(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	newPasswordHash, err := auth.HashedPassword(params.NewPassword)
@@ -232,9 +270,10 @@ func (c *Config) handlerUpdateUser(w http.ResponseWriter, r *http.Request, user 
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := c.HSetEncoded(ctx, UsersTable, user.ID, User{
+	if err := c.HSetEncoded(r.Context(), UsersTable, user.ID, User{
 		ID:             user.ID,
 		Email:          user.Email,
+		Username:       user.Username,
 		CreatedAt:      user.CreatedAt,
 		UpdatedAt:      time.Now().String(),
 		HashedPassword: newPasswordHash,
@@ -256,23 +295,21 @@ func (c *Config) handlerCreateLibrary(w http.ResponseWriter, r *http.Request, us
 		Title   string `json:"title"`
 		Private bool   `json:"private"`
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
 	var params parameters
 	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
-		respondWithJSON(w, http.StatusBadRequest, "invalid payload")
+		respondWithJSON(w, http.StatusBadRequest, "invalid payload"+err.Error())
 		return
 	}
 	if err := auth.IsValidTitle(params.Title); err != nil {
-		respondWithJSON(w, http.StatusBadRequest, "invalid input")
+		respondWithJSON(w, http.StatusBadRequest, "invalid input"+err.Error())
 		return
 	}
-	lib, err := c.CreateLibrary(ctx, params.Private, params.Title, user.ID)
+	lib, err := c.createLibrary(r.Context(), params.Private, params.Title, user.ID)
 	if err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := c.HSetEncoded(ctx, LibsTable, lib.ID, lib); err != nil {
+	if err := c.HSetEncoded(r.Context(), LibraryTable, lib.ID, lib); err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -280,18 +317,17 @@ func (c *Config) handlerCreateLibrary(w http.ResponseWriter, r *http.Request, us
 }
 
 func (c *Config) handlerGetUsersLibraries(w http.ResponseWriter, r *http.Request, user *User) {
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-	keys, err := c.HScanKeys(ctx, LibsTable, user.ID, 0)
+	fmt.Println(user.ID)
+	keys, err := c.HScanAllKeys(r.Context(), LibraryTable, user.ID)
 	if err != nil {
-		respondWithJSON(w, http.StatusInternalServerError, "internal error")
+		respondWithJSON(w, http.StatusInternalServerError, "internal error "+err.Error())
 		return
 	}
 	libs := make([]Library, len(keys))
 	for i, key := range keys {
-		lib, err := HGetDecoded[Library](ctx, c.redis, LibsTable, key)
+		lib, err := HGetDecoded[Library](r.Context(), c.redis, LibraryTable, key)
 		if err != nil {
-			respondWithJSON(w, http.StatusInternalServerError, "internal error")
+			respondWithJSON(w, http.StatusInternalServerError, "internal error 2")
 			return
 		}
 		libs[i] = lib
@@ -300,16 +336,14 @@ func (c *Config) handlerGetUsersLibraries(w http.ResponseWriter, r *http.Request
 }
 
 func (c *Config) handlerGetLibrary(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
 	id := chi.URLParam(r, "id")
 	if err := validateURLParam(id); err != nil {
-		respondWithJSON(w, http.StatusBadRequest, "invalid url parameter")
+		respondWithJSON(w, http.StatusBadRequest, "invalid url parameter 1")
 		return
 	}
-	owner, private, err := parsedId(id)
+	owner, private, err := parseLibraryID(id)
 	if err != nil {
-		respondWithJSON(w, http.StatusBadRequest, "invalid url parameter")
+		respondWithJSON(w, http.StatusBadRequest, "couldn't parse library id")
 		return
 	}
 	userId, _ := auth.AuthorizeJWT(r.Header, c.jwtSecret)
@@ -317,7 +351,7 @@ func (c *Config) handlerGetLibrary(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusUnauthorized, "couldn't retrieve library")
 		return
 	}
-	lib, err := HGetDecoded[Library](ctx, c.redis, LibsTable, id)
+	lib, err := HGetDecoded[Library](r.Context(), c.redis, LibraryTable, id)
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			respondWithJSON(w, http.StatusNoContent, "unknown id")
@@ -329,7 +363,7 @@ func (c *Config) handlerGetLibrary(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	books := make([]Book, len(lib.BookIDs))
 	for i, id := range lib.BookIDs {
-		book, err := HGetDecoded[Book](ctx, c.redis, BooksTable, id)
+		book, err := HGetDecoded[Book](r.Context(), c.redis, BooksTable, id)
 		if err != nil {
 			if !errors.Is(err, redis.Nil) {
 				respondWithJSON(w, http.StatusInternalServerError, "internal error")
@@ -367,7 +401,7 @@ func (c *Config) handlerDeleteLibrary(w http.ResponseWriter, r *http.Request, us
 		respondWithJSON(w, http.StatusBadRequest, "invalid url parameter")
 		return
 	}
-	owner, _, err := parsedId(id)
+	owner, _, err := parseLibraryID(id)
 	if err != nil {
 		respondWithJSON(w, http.StatusBadRequest, "malformed id")
 		return
@@ -376,7 +410,7 @@ func (c *Config) handlerDeleteLibrary(w http.ResponseWriter, r *http.Request, us
 		respondWithJSON(w, http.StatusUnauthorized, "no access")
 		return
 	}
-	if err := c.redis.HDel(r.Context(), LibsTable, id).Err(); err != nil {
+	if err := c.redis.HDel(r.Context(), LibraryTable, id).Err(); err != nil {
 		if errors.Is(err, redis.Nil) {
 			respondWithJSON(w, http.StatusNotFound, "couldn't retrieve library")
 		} else {
@@ -385,10 +419,6 @@ func (c *Config) handlerDeleteLibrary(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	emptyResponse(w)
-}
-
-func (c *Config) handlerReadiness(w http.ResponseWriter, r *http.Request) {
-	respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (c *Config) handlerGetBooks(w http.ResponseWriter, r *http.Request) {
@@ -460,7 +490,7 @@ func (c *Config) handlerGetReviewById(w http.ResponseWriter, r *http.Request) {
 		respondWithJSON(w, http.StatusBadRequest, "invalid url parameter")
 		return
 	}
-	owner, private, err := parsedId(id)
+	owner, private, err := parseReviewID(id)
 	if err != nil {
 		respondWithJSON(w, http.StatusBadRequest, "invalid id")
 		return
@@ -502,7 +532,7 @@ func (c *Config) handlerUpdateReview(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	match := formatId(user.ID, bookId)
-	keys, err := c.HScanKeys(ctx, ReviewsTable, match, 0)
+	keys, err := c.HScanAllKeys(ctx, ReviewsTable, match)
 	if err != nil || len(keys) > 1 {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
@@ -555,7 +585,7 @@ func (c *Config) handlerCreateReview(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	match := formatId(user.ID, bookId)
-	keys, err := c.HScanKeys(ctx, ReviewsTable, match, 0)
+	keys, err := c.HScanAllKeys(ctx, ReviewsTable, match)
 	if err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
@@ -612,7 +642,7 @@ func (c *Config) handlerDeleteReview(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	match := formatId(user.ID, bookId)
-	keys, err := c.HScanKeys(ctx, ReviewsTable, match, 0)
+	keys, err := c.HScanAllKeys(ctx, ReviewsTable, match)
 	if err != nil || len(keys) > 1 {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
@@ -675,7 +705,7 @@ func (c *Config) handlerGetReviewsByBookId(w http.ResponseWriter, r *http.Reques
 func (c *Config) handlerGetTracked(w http.ResponseWriter, r *http.Request, user *User) {
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
-	keys, err := c.HScanKeys(ctx, ReviewsTable, user.ID, 0)
+	keys, err := c.HScanAllKeys(ctx, ReviewsTable, user.ID)
 	if err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, "internal error")
 		return
@@ -696,45 +726,8 @@ func (c *Config) handlerGetTracked(w http.ResponseWriter, r *http.Request, user 
 	}
 }
 
-func (c *Config) handlerFetchBookById(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-	id := chi.URLParam(r, "id")
-	if err := validateURLParam(id); err != nil {
-		respondWithJSON(w, http.StatusBadRequest, "invalid url parameter")
-		return
-	}
-	book, err := HGetDecoded[Book](ctx, c.redis, BooksTable, id)
-	if err != nil {
-		if !errors.Is(err, redis.Nil) {
-			respondWithJSON(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		url := bookURL(id)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			respondWithJSON(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		resp, err := c.client.Do(req)
-		if err != nil {
-			respondWithJSON(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			respondWithJSON(w, resp.StatusCode, "external api error")
-			return
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&book); err != nil {
-			respondWithJSON(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		if err := c.CreateBook(ctx, &book); err != nil {
-			slog.Error("error creating book : ", "error", err)
-		}
-	}
-	respondWithJSON(w, http.StatusCreated, book)
+func (c *Config) handlerReadiness(w http.ResponseWriter, r *http.Request) {
+	respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (c *Config) handlerGetUser(w http.ResponseWriter, r *http.Request, user *User) {

@@ -5,45 +5,36 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 
 	"github.com/redis/go-redis/v9"
 )
 
-func (c *Config) HScanKeys(ctx context.Context, table, key string, limit int) ([]string, error) {
+func (c *Config) HScanAllKeys(ctx context.Context, table, key string) ([]string, error) {
 	var (
-		allKeys []string
 		cursor  uint64
-		err     error
+		allKeys []string
 	)
-	if limit <= 0 {
-		limit = math.MaxInt64
+	if c.testing {
+		return c.redis.HKeys(ctx, table).Result()
 	}
 	match := fmt.Sprintf("*%s*", key)
-	for {
-		var (
-			keys []string
-			next uint64
-		)
 
-		keys, next, err = c.redis.HScanNoValues(ctx, table, cursor, match, 100).Result()
+	for {
+		keys, next, err := c.redis.HScanNoValues(ctx, table, cursor, match, 100).Result()
 		if err != nil {
-			return []string{}, err
+			return nil, err
 		}
-		for _, key := range keys {
-			allKeys = append(allKeys, key)
-			if len(allKeys) >= limit {
-				break
-			}
-		}
+
+		allKeys = append(allKeys, keys...)
+
 		if next == 0 {
 			break
 		}
 		cursor = next
 	}
+
 	return allKeys, nil
 }
-
 func (c *Config) KeysAppend(ctx context.Context, table, val string) error {
 	allKeys, err := GetDecoded[[]string](ctx, c.redis, table)
 	if err != nil {
@@ -129,7 +120,7 @@ func HGetDecoded[T any](ctx context.Context, rdb *redis.Client, table, key strin
 }
 
 func (c *Config) HSetEncoded(ctx context.Context, table, key string, payload any) error {
-	data, err := json.Marshal(&payload)
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -137,7 +128,7 @@ func (c *Config) HSetEncoded(ctx context.Context, table, key string, payload any
 }
 
 func (c *Config) HSetNXEncoded(ctx context.Context, table, key string, payload any) error {
-	data, err := json.Marshal(&payload)
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}

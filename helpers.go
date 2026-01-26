@@ -1,15 +1,12 @@
 package main
 
 import (
-	"codex/internal/auth"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
-	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +19,7 @@ const (
 	UsersTable      = "USERS"
 	TokensTable     = "TOKENS"
 	KeysTable       = "KEYS"
-	LibsTable       = "LIBRARIES"
+	LibraryTable    = "LIBRARY"
 	BooksTable      = "BOOKS"
 	ReviewsTable    = "REVIEWS"
 	CategoriesTable = "CATEGORIES"
@@ -48,21 +45,6 @@ func (c *Config) GenerateUserKeys(ctx context.Context, email, username string) (
 		return "", err
 	}
 	return keys[EncodeToString([]string{email})], nil
-}
-
-func (c *Config) authorizeRefreshToken(ctx context.Context, header http.Header, id string) error {
-	token, err := auth.GetRefreshToken(header)
-	if err != nil {
-		return err
-	}
-	storedToken, err := c.redis.HGet(ctx, TokensTable, id).Result()
-	if err != nil {
-		return err
-	}
-	if !auth.IsValidRefreshToken(token, storedToken, c.hmacSecret) {
-		return fmt.Errorf("invalid token")
-	}
-	return nil
 }
 
 func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
@@ -94,20 +76,6 @@ func (c *Config) DeleteUser(ctx context.Context, user *User) error {
 	return c.redis.HDel(ctx, KeysTable, emailKey, userKey).Err()
 }
 
-func (c *Config) updateRefreshToken(ctx context.Context, id string) (string, error) {
-	token, err := auth.GenerateRefreshToken()
-	if err != nil {
-		return "", err
-	}
-	hash := auth.HashRefreshToken(token, c.hmacSecret)
-	if err := c.redis.HSet(ctx, TokensTable, map[string]string{
-		id: hash,
-	}).Err(); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
 func (c *Config) CreateBook(ctx context.Context, book *Book) error {
 	if err := c.HSetEncoded(ctx, BooksTable, book.ID, book); err != nil {
 		return err
@@ -124,12 +92,13 @@ func (c *Config) CreateBook(ctx context.Context, book *Book) error {
 	return nil
 }
 
-func (c *Config) CreateLibrary(ctx context.Context, private bool, title, userId string) (Library, error) {
+func (c *Config) createLibrary(ctx context.Context, private bool, title, userId string) (Library, error) {
 	var (
 		createdAt = time.Now().String()
 		id        = EncodeToString([]string{title, createdAt})
 		p         = boolToString(private)
 	)
+
 	libId := strings.Join([]string{p, userId, id}, Sep)
 	lib := Library{
 		ID:        libId,
@@ -148,19 +117,20 @@ func EncodeToString(elems []string) string {
 	return hex.EncodeToString(key[:])[:12]
 }
 
-func parsedId(id string) (string, bool, error) {
+func parseLibraryID(id string) (string, bool, error) {
 	split := strings.Split(id, Sep)
 	if len(split) != 3 {
-		return "", false, fmt.Errorf("invalid id")
+		return "", false, fmt.Errorf("malformed id")
 	}
-	private, err := stringToBool(split[1])
+	private, err := stringToBool(split[0])
 	if err != nil {
 		return "", false, err
 	}
-	if slices.Contains(split, "") {
-		return "", false, fmt.Errorf("malformed id")
-	}
-	return split[0], private, nil
+	return split[1], private, nil
+}
+
+func parseReviewID(id string) (string, bool, error) {
+	return "", false, nil
 }
 
 func formatId(userId, id string) string {

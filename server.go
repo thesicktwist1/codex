@@ -12,11 +12,10 @@ const (
 )
 
 type Config struct {
-	redis      *redis.Client
-	server     http.Server
-	client     http.Client
-	jwtSecret  string
-	hmacSecret []byte
+	http.Server
+	redis     *redis.Client
+	jwtSecret string
+	testing   bool
 }
 
 func NewConfig(rdb *redis.Client, opts ...OptsFunc) *Config {
@@ -25,10 +24,11 @@ func NewConfig(rdb *redis.Client, opts ...OptsFunc) *Config {
 		o(opt)
 	}
 	c := &Config{
-		server: http.Server{
+		Server: http.Server{
 			Addr: opt.Addr,
 		},
-		redis: rdb,
+		testing: opt.Testing,
+		redis:   rdb,
 	}
 	c.setupMux()
 	return c
@@ -38,15 +38,12 @@ func (c *Config) SetJWTSecret(secret string) {
 	c.jwtSecret = secret
 }
 
-func (c *Config) SetHMACSecret(secret []byte) {
-	c.hmacSecret = secret
-}
-
 func (c *Config) setupMux() {
 	mux := chi.NewMux()
 	// account handling
 	mux.Post("/register", c.handlerRegisterUser)
 	mux.Post("/revoke", c.middlewareAuth(c.handlerRevokeToken))
+	mux.Post("/refresh", c.handlerRefresh)
 	mux.Post("/login", c.handlerLogin)
 	mux.Delete("/user", c.middlewareAuth(c.handlerDeleteUser))
 	mux.Get("/user", c.middlewareAuth(c.handlerGetUser))
@@ -73,17 +70,19 @@ func (c *Config) setupMux() {
 
 	mux.Get("/tracked", c.middlewareAuth(c.handlerGetTracked))
 
-	// fetch handling
-	mux.Get("/fetch/book/{id}", c.handlerFetchBookById)
-
 	// server readiness
 	mux.Get("/healthz", c.handlerReadiness)
 
-	c.server.Handler = mux
+	c.Server.Handler = mux
+}
+
+func (c *Config) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	c.Server.Handler.ServeHTTP(w, r)
 }
 
 type Opts struct {
-	Addr string
+	Addr    string
+	Testing bool
 }
 
 type OptsFunc func(*Opts)
@@ -91,5 +90,11 @@ type OptsFunc func(*Opts)
 func defaultOpts() *Opts {
 	return &Opts{
 		Addr: defaultAddr,
+	}
+}
+
+func withTesting() OptsFunc {
+	return func(o *Opts) {
+		o.Testing = true
 	}
 }
