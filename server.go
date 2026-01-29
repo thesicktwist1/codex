@@ -52,21 +52,29 @@ func (c *Config) setupMux() {
 	// libraries handling
 	mux.Post("/libraries", c.middlewareAuth(c.handlerCreateLibrary))
 	mux.Get("/libraries", c.middlewareAuth(c.handlerGetUsersLibraries))
-	mux.Get("/libraries/{id}", c.handlerGetLibrary)
-	mux.Delete("/libraries/{id}", c.middlewareAuth(c.handlerDeleteLibrary))
+	mux.Get("/libraries/{libraryID}", c.handlerGetLibrary)
+	mux.Delete("/libraries/{libraryID}", c.middlewareAuth(c.handlerDeleteLibrary))
+	mux.Delete(
+		"/libraries/{libraryID}/books/{bookIdx}",
+		c.middlewareAuth(c.handlerDeleteLibraryBook),
+	)
+	mux.Post("/libraries/{libraryID}/books/{bookID}",
+		c.middlewareAuth(c.handlerUpdateLibraryBooks),
+	)
 
 	// books handling
 	mux.Get("/books", c.handlerGetBooks)
-	mux.Get("/books/{id}/reviews", c.handlerGetReviewsByBookId)
+	mux.Get("/books/{bookID}/reviews", c.handlerGetReviewsByBookId)
+	mux.Post("/books", c.handlerCreateBook)
 
 	mux.Get("/book/{id}", c.handlerGetBookById)
 
 	// reviews handling
 
-	mux.Post("/review/{bookId}", c.middlewareAuth(c.handlerCreateReview))
-	mux.Delete("/review/{bookId}", c.middlewareAuth(c.handlerDeleteReview))
-	mux.Put("/review/{bookId}", c.middlewareAuth(c.handlerUpdateReview))
-	mux.Get("/review/{id}", c.handlerGetReviewById)
+	mux.Post("/review/{bookID}", c.middlewareAuth(c.handlerCreateReview))
+	mux.Delete("/review/{bookID}", c.middlewareAuth(c.handlerDeleteReview))
+	mux.Put("/review/{bookID}", c.middlewareAuth(c.handlerUpdateReview))
+	mux.Get("/review/{reviewID}", c.handlerGetReviewById)
 
 	mux.Get("/tracked", c.middlewareAuth(c.handlerGetTracked))
 

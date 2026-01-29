@@ -33,6 +33,7 @@ const (
 
 	timeout   = time.Second * 10
 	pageLimit = 20
+	testPath  = "/internal/test/book.json"
 
 	Sep = ":"
 )
@@ -45,20 +46,6 @@ func (c *Config) GenerateUserKeys(ctx context.Context, email, username string) (
 		return "", err
 	}
 	return keys[EncodeToString([]string{email})], nil
-}
-
-func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
-	for _, key := range keys {
-		encodedKey := EncodeToString([]string{key})
-		exist, err := c.redis.HExists(ctx, KeysTable, encodedKey).Result()
-		if err != nil {
-			return err
-		}
-		if exist {
-			return fmt.Errorf("key already exist")
-		}
-	}
-	return nil
 }
 
 func (c *Config) DeleteUser(ctx context.Context, user *User) error {
@@ -76,8 +63,12 @@ func (c *Config) DeleteUser(ctx context.Context, user *User) error {
 	return c.redis.HDel(ctx, KeysTable, emailKey, userKey).Err()
 }
 
-func (c *Config) CreateBook(ctx context.Context, book *Book) error {
-	if err := c.HSetEncoded(ctx, BooksTable, book.ID, book); err != nil {
+func (c *Config) DeleteReview(ctx context.Context, review *Review) error {
+	return nil
+}
+
+func (c *Config) CreateBook(ctx context.Context, book Book) error {
+	if err := c.redis.HSetNX(ctx, BooksTable, book.ID, book).Err(); err != nil {
 		return err
 	}
 	if err := c.KeysAppend(ctx, BookKeys, book.ID); err != nil {
@@ -92,24 +83,28 @@ func (c *Config) CreateBook(ctx context.Context, book *Book) error {
 	return nil
 }
 
-func (c *Config) createLibrary(ctx context.Context, private bool, title, userId string) (Library, error) {
-	var (
-		createdAt = time.Now().String()
-		id        = EncodeToString([]string{title, createdAt})
-		p         = boolToString(private)
-	)
-
-	libId := strings.Join([]string{p, userId, id}, Sep)
-	lib := Library{
-		ID:        libId,
-		Owner:     userId,
-		Title:     title,
-		CreatedAt: createdAt,
-		UpdatedAt: createdAt,
-		BookIDs:   make([]string, 0),
-		Private:   private,
+func GetBooks(ctx context.Context, redis *redis.Client, IDs []string) ([]Book, error) {
+	books := make([]Book, len(IDs))
+	for i, id := range IDs {
+		book, err := HGetDecoded[Book](ctx, redis, BooksTable, id)
+		if err != nil {
+			return []Book{}, err
+		} else {
+			books[i] = book
+		}
 	}
-	return lib, nil
+	return books, nil
+}
+
+func validateIndex(parameter string, length int) (int, error) {
+	index, err := strconv.Atoi(parameter)
+	if err != nil {
+		return 0, err
+	}
+	if index >= length || index < 0 {
+		return 0, fmt.Errorf("invalid index")
+	}
+	return index, nil
 }
 
 func EncodeToString(elems []string) string {
@@ -117,44 +112,12 @@ func EncodeToString(elems []string) string {
 	return hex.EncodeToString(key[:])[:12]
 }
 
-func parseLibraryID(id string) (string, bool, error) {
-	split := strings.Split(id, Sep)
-	if len(split) != 3 {
-		return "", false, fmt.Errorf("malformed id")
-	}
-	private, err := stringToBool(split[0])
-	if err != nil {
-		return "", false, err
-	}
-	return split[1], private, nil
-}
-
 func parseReviewID(id string) (string, bool, error) {
 	return "", false, nil
 }
 
-func formatId(userId, id string) string {
-	return strings.Join([]string{userId, id}, Sep)
-}
-
-func stringToBool(s string) (bool, error) {
-	m := map[string]bool{
-		"1": true,
-		"0": false,
-	}
-	b, exist := m[s]
-	if !exist {
-		return false, fmt.Errorf("invalid input : %v", s)
-	}
-	return b, nil
-}
-
-func boolToString(b bool) string {
-	m := map[bool]string{
-		false: "0",
-		true:  "1",
-	}
-	return m[b]
+func formatId(userId, resourceId string) string {
+	return strings.Join([]string{userId, resourceId}, Sep)
 }
 
 func parseURLQueryInt(q string) (int, error) {
@@ -172,6 +135,15 @@ func parseURLQueryInt(q string) (int, error) {
 		n = int(math.Abs(float64(n)))
 	}
 	return n, nil
+}
+
+func parseOwnerID(id string) (string, error) {
+	split := strings.Split(id, Sep)
+	if len(split) != 2 {
+		return "", fmt.Errorf("malformed id")
+	}
+
+	return split[0], nil
 }
 
 func validateURLParam(param string) error {
@@ -198,8 +170,4 @@ func generateKeys(email string, username string) map[string]string {
 
 func bookURL(id string) string {
 	return fmt.Sprintf("https://www.googleapis.com/books/v1/volumes/%s", id)
-}
-
-func bookListURL(queries string) string {
-	return fmt.Sprintf("%s", queries)
 }

@@ -18,6 +18,7 @@ import (
 const (
 	jwtSecretTest   = "34236121r2311d"
 	LibraryTestName = "Title Test 123"
+	BookIdTest      = "bk_9f3a21c"
 )
 
 func setupUser(config *Config, t *testing.T) []byte {
@@ -47,6 +48,36 @@ func setupUser(config *Config, t *testing.T) []byte {
 
 	require.Equalf(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
 	return w.Body.Bytes()
+}
+
+func setupBook(config *Config, t *testing.T) {
+	body := bytes.NewBuffer([]byte(`{
+  "id": "bk_9f3a21c",
+  "volumeInfo": {
+    "title": "The Last Packet on the Wire",
+    "authors": [
+      "Alex Monroe",
+      "Jamie Calder"
+    ],
+    "publisher": "ByteForge Press",
+    "publishedDate": "2019-08-14",
+    "description": "A fast-paced techno-thriller following a backend engineer who uncovers a hidden protocol capable of reshaping the internet.",
+    "pageCount": 384,
+    "mainCategory": "Technology",
+    "categories": [
+      "Computers",
+      "Thriller",
+      "Software Engineering"
+    ]
+  }
+}`))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/books", body)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusCreated, w.Code, "%s", w.Body)
+
 }
 
 func setupUsersLibrary(config *Config, t *testing.T) []byte {
@@ -511,4 +542,83 @@ func Test_handlerGetUsersLibraries(t *testing.T) {
 
 	require.Equal(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
 
+	var libraries []Library
+
+	err = json.Unmarshal(w.Body.Bytes(), &libraries)
+	require.NoError(t, err)
+
+}
+
+func Test_handlerCreateBook(t *testing.T) {
+	config := NewConfig(setupRedis(t))
+
+	body := bytes.NewBuffer([]byte(`{
+  "id": "bk_9f3a21c",
+  "volumeInfo": {
+    "title": "The Last Packet on the Wire",
+    "authors": [
+      "Alex Monroe",
+      "Jamie Calder"
+    ],
+    "publisher": "ByteForge Press",
+    "publishedDate": "2019-08-14",
+    "description": "A fast-paced techno-thriller following a backend engineer who uncovers a hidden protocol capable of reshaping the internet.",
+    "pageCount": 384,
+    "mainCategory": "Technology",
+    "categories": [
+      "Computers",
+      "Thriller",
+      "Software Engineering"
+    ]
+  }
+}`))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/books", body)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusCreated, w.Code, "%s", w.Body)
+}
+
+func Test_handlerUpdateLibraryBooks(t *testing.T) {
+	config := NewConfig(setupRedis(t))
+
+	setupBook(config, t)
+
+	usersLibraryData := setupUsersLibrary(config, t)
+
+	var lib Library
+
+	err := json.Unmarshal(usersLibraryData, &lib)
+	require.NoError(t, err)
+
+	body := bytes.NewBuffer([]byte(`{
+	    "key": "johnnytest34",
+		"password": "superSecret123"
+	}`))
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/login", body)
+
+	config.ServeHTTP(w, r)
+
+	type response struct {
+		Token string `json:"token"`
+	}
+
+	var resp response
+
+	err = json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	require.Equalf(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
+
+	pattern := fmt.Sprintf("/libraries/{%s}/books/{%s}", lib.ID, BookIdTest)
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("POST", pattern, nil)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusOK, w.Code, "%s", w.Body.String())
 }

@@ -33,7 +33,7 @@ type Library struct {
 	Title     string
 	CreatedAt string
 	UpdatedAt string
-	BookIDs   []string
+	BooksID   []string
 	Private   bool
 }
 

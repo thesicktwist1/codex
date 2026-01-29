@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -89,60 +88,6 @@ func Test_parseURLQueryInt(t *testing.T) {
 	}
 }
 
-func Test_boolToString(t *testing.T) {
-	gotTrue := boolToString(true)
-	expectedTrue := "1"
-	require.Equal(t, expectedTrue, gotTrue)
-
-	gotFalse := boolToString(false)
-	expectedFalse := "0"
-	require.Equal(t, expectedFalse, gotFalse)
-}
-
-func Test_stringToBool(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    bool
-		wantErr bool
-	}{
-		{
-			name:  "valid ( 1 should be equal to true )",
-			input: "1",
-			want:  true,
-		},
-		{
-			name:  "valid ( 0 should be equal to false )",
-			input: "0",
-			want:  false,
-		},
-		{
-			name:    "invalid ( malformed input )",
-			input:   "rtyeuy",
-			wantErr: true,
-		},
-		{
-			name:    " malformed input ",
-			input:   "5",
-			wantErr: true,
-		},
-		{
-			name:    "malformed input",
-			input:   "00",
-			wantErr: true,
-		},
-	}
-	for _, tc := range tests {
-		got, err := stringToBool(tc.input)
-		if tc.wantErr {
-			require.Error(t, err)
-		} else {
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
-		}
-	}
-}
-
 func Test_formatId(t *testing.T) {
 	got := formatId("userexample", "randomid")
 	want := "userexample:randomid"
@@ -158,19 +103,4 @@ func Test_generateKeys(t *testing.T) {
 	}
 	got := generateKeys(email, username)
 	require.Equal(t, expected, got)
-}
-
-func Test_createLibrary(t *testing.T) {
-	config := NewConfig(setupRedis(t))
-	ctx := context.Background()
-
-	got, err := config.createLibrary(ctx, true, "Test Title 123", "userId23")
-	require.NoError(t, err)
-
-	require.Contains(t, got.ID, "1:userId23")
-	require.Equal(t, got.Owner, "userId23")
-	require.Equal(t, got.Title, "Test Title 123")
-	require.True(t, got.Private)
-	require.Empty(t, got.BookIDs)
-
 }

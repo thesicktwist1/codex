@@ -5,20 +5,59 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 )
 
-func (c *Config) HScanAllKeys(ctx context.Context, table, key string) ([]string, error) {
+func (c *Config) HSetEncodedNX(ctx context.Context, table, key string, payload any) (bool, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return false, err
+	}
+	return c.redis.HSetNX(ctx, table, key, data).Result()
+}
+
+func (c *Config) HSetEncoded(ctx context.Context, table, key string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return c.redis.HSet(ctx, table, key, data).Err()
+}
+
+func (c *Config) LookUpKeys(ctx context.Context, keys ...string) error {
+	for _, key := range keys {
+		encodedKey := EncodeToString([]string{key})
+		exist, err := c.redis.HExists(ctx, KeysTable, encodedKey).Result()
+		if err != nil {
+			return err
+		}
+		if exist {
+			return fmt.Errorf("key already exist")
+		}
+	}
+	return nil
+}
+
+func (c *Config) HScanAllKeys(ctx context.Context, table, id string) ([]string, error) {
 	var (
 		cursor  uint64
 		allKeys []string
 	)
 	if c.testing {
-		return c.redis.HKeys(ctx, table).Result()
+		keys, err := c.redis.HKeys(ctx, table).Result()
+		if err != nil {
+			return []string{}, err
+		}
+		for _, key := range keys {
+			if strings.Contains(key, id) {
+				allKeys = append(allKeys, key)
+			}
+		}
+		return allKeys, nil
 	}
-	match := fmt.Sprintf("*%s*", key)
-
+	match := fmt.Sprintf("*%s*", id)
 	for {
 		keys, next, err := c.redis.HScanNoValues(ctx, table, cursor, match, 100).Result()
 		if err != nil {
@@ -66,25 +105,11 @@ func (c *Config) HKeysAppend(ctx context.Context, table, key, val string) error 
 		if !errors.Is(err, redis.Nil) {
 			return err
 		} else {
-			return c.HSetEncoded(ctx, table, key, []string{val})
+			return c.redis.HSetNX(ctx, table, key, []string{val}).Err()
 		}
 	}
 	keys = append(keys, val)
-	return c.HSetEncoded(ctx, table, key, keys)
-}
-
-func (c *Config) HKeysDelete(ctx context.Context, table, key, val string) error {
-	keys, err := HGetDecoded[[]string](ctx, c.redis, table, key)
-	if err != nil {
-		return err
-	}
-	for i, v := range keys {
-		if v == val {
-			keys = append(keys[:i], keys[i+1:]...)
-			break
-		}
-	}
-	return c.HSetEncoded(ctx, table, key, keys)
+	return c.redis.HSetNX(ctx, table, key, keys).Err()
 }
 
 func GetDecoded[T any](ctx context.Context, rdb *redis.Client, key string) (T, error) {
@@ -117,20 +142,4 @@ func HGetDecoded[T any](ctx context.Context, rdb *redis.Client, table, key strin
 		return payload, err
 	}
 	return payload, nil
-}
-
-func (c *Config) HSetEncoded(ctx context.Context, table, key string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return c.redis.HSet(ctx, table, key, data).Err()
-}
-
-func (c *Config) HSetNXEncoded(ctx context.Context, table, key string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return c.redis.HSetNX(ctx, table, key, data).Err()
 }
