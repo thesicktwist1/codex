@@ -11,7 +11,7 @@ func (c *Config) middlewareAuth(authFunc AuthedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := auth.AuthorizeJWT(r.Header, c.jwtSecret)
 		if err != nil {
-			respondWithJSON(w, http.StatusUnauthorized, "invalid credentials")
+			respondWithJSON(w, http.StatusUnauthorized, "invalid credentials "+err.Error())
 			return
 		}
 		user, err := HGetDecoded[*User](r.Context(), c.redis, UsersTable, id)

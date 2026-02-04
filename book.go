@@ -4,7 +4,7 @@ import (
 	"strings"
 )
 
-type Status uint32
+type Status int
 
 const (
 	Reading Status = 1 << iota
@@ -37,6 +37,14 @@ type Library struct {
 	Private   bool
 }
 
+func (l *Library) Append(bookID string) {
+	l.BooksID = append(l.BooksID, bookID)
+}
+
+func (l *Library) Delete(index int) {
+	l.BooksID = append(l.BooksID[:index], l.BooksID[index+1:]...)
+}
+
 type Review struct {
 	BookID      string
 	UserID      string
@@ -44,7 +52,7 @@ type Review struct {
 	CreatedAt   string
 	UpdatedAt   string
 	Status      Status
-	Note        int
+	Rating      int
 	CurrentPage int
 	Private     bool
 }

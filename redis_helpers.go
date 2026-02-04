@@ -92,24 +92,35 @@ func (c *Config) KeysDelete(ctx context.Context, table, val string) error {
 	}
 	for i, key := range allKeys {
 		if key == val {
-			allKeys = append(allKeys[:i], allKeys[i+1:]...)
-			break
+			return c.SetEncoded(ctx, table, append(allKeys[:i], allKeys[i+1:]...))
 		}
 	}
-	return c.SetEncoded(ctx, table, allKeys)
+	return nil
 }
 
-func (c *Config) HKeysAppend(ctx context.Context, table, key, val string) error {
-	keys, err := HGetDecoded[[]string](ctx, c.redis, table, key)
+func (c *Config) HKeysDelete(ctx context.Context, table, key, val string) error {
+	allKeys, err := HGetDecoded[[]string](ctx, c.redis, table, key)
+	if err != nil {
+		return err
+	}
+	for i, k := range allKeys {
+		if k == val {
+			return c.HSetEncoded(ctx, table, key, append(allKeys[:i], allKeys[i+1:]...))
+		}
+	}
+	return nil
+}
+
+func (c *Config) HKeysAppend(ctx context.Context, table, key string, vals ...string) error {
+	allKeys, err := HGetDecoded[[]string](ctx, c.redis, table, key)
 	if err != nil {
 		if !errors.Is(err, redis.Nil) {
 			return err
 		} else {
-			return c.redis.HSetNX(ctx, table, key, []string{val}).Err()
+			return c.HSetEncoded(ctx, table, key, append(allKeys, vals...))
 		}
 	}
-	keys = append(keys, val)
-	return c.redis.HSetNX(ctx, table, key, keys).Err()
+	return c.HSetEncoded(ctx, table, key, append(allKeys, vals...))
 }
 
 func GetDecoded[T any](ctx context.Context, rdb *redis.Client, key string) (T, error) {

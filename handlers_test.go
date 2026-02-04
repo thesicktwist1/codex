@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -111,9 +112,7 @@ func setupUsersLibrary(config *Config, t *testing.T) []byte {
 
 func setupRedis(t *testing.T) *redis.Client {
 	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	t.Cleanup(mr.Close)
 
@@ -592,6 +591,10 @@ func Test_handlerUpdateLibraryBooks(t *testing.T) {
 	err := json.Unmarshal(usersLibraryData, &lib)
 	require.NoError(t, err)
 
+	exist, err := config.redis.HExists(t.Context(), LibraryTable, lib.ID).Result()
+	require.NoError(t, err)
+	require.True(t, exist)
+
 	body := bytes.NewBuffer([]byte(`{
 	    "key": "johnnytest34",
 		"password": "superSecret123"
@@ -613,7 +616,7 @@ func Test_handlerUpdateLibraryBooks(t *testing.T) {
 
 	require.Equalf(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
 
-	pattern := fmt.Sprintf("/libraries/{%s}/books/{%s}", lib.ID, BookIdTest)
+	pattern := fmt.Sprintf("/libraries/%s/books/%s", lib.ID, BookIdTest)
 	w = httptest.NewRecorder()
 	r = httptest.NewRequest("POST", pattern, nil)
 	r.Header.Set("Authorization", "Bearer "+resp.Token)
@@ -621,4 +624,447 @@ func Test_handlerUpdateLibraryBooks(t *testing.T) {
 	config.ServeHTTP(w, r)
 
 	require.Equalf(t, http.StatusOK, w.Code, "%s", w.Body.String())
+}
+
+func Test_handlerDeleteLibraryBook(t *testing.T) {
+	config := NewConfig(setupRedis(t))
+
+	setupBook(config, t)
+
+	usersLibraryData := setupUsersLibrary(config, t)
+
+	var lib Library
+
+	err := json.Unmarshal(usersLibraryData, &lib)
+	require.NoError(t, err)
+
+	exist, err := config.redis.HExists(t.Context(), LibraryTable, lib.ID).Result()
+	require.NoError(t, err)
+	require.True(t, exist)
+
+	body := bytes.NewBuffer([]byte(`{
+	    "key": "johnnytest34",
+		"password": "superSecret123"
+	}`))
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/login", body)
+
+	config.ServeHTTP(w, r)
+
+	type response struct {
+		Token string `json:"token"`
+	}
+
+	var resp response
+
+	err = json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	require.Equalf(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
+
+	pattern := fmt.Sprintf("/libraries/%s/books/%s", lib.ID, BookIdTest)
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("POST", pattern, nil)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusOK, w.Code, "%s", w.Body.String())
+
+	bookIndex := 0
+
+	pattern = fmt.Sprintf("/libraries/%s/books/%d", lib.ID, bookIndex)
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("DELETE", pattern, nil)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
+}
+
+func Test_handlerGetBooks(t *testing.T) {
+	config := NewConfig(setupRedis(t))
+
+	setupBook(config, t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/books?page=1&limit=10", nil)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
+
+	var got []Book
+
+	err := json.Unmarshal(w.Body.Bytes(), &got)
+	require.NoError(t, err)
+
+	var expected []Book
+
+	expectedBody := []byte(`[{
+  "id": "bk_9f3a21c",
+  "volumeInfo": {
+    "title": "The Last Packet on the Wire",
+    "authors": [
+      "Alex Monroe",
+      "Jamie Calder"
+    ],
+    "publisher": "ByteForge Press",
+    "publishedDate": "2019-08-14",
+    "description": "A fast-paced techno-thriller following a backend engineer who uncovers a hidden protocol capable of reshaping the internet.",
+    "pageCount": 384,
+    "mainCategory": "Technology",
+    "categories": [
+      "Computers",
+      "Thriller",
+      "Software Engineering"
+    ]}}]`)
+
+	err = json.Unmarshal(expectedBody, &expected)
+	require.NoError(t, err)
+
+	require.Equal(t, expected, got)
+
+}
+
+func Test_handlerGetBookById(t *testing.T) {
+	config := NewConfig(setupRedis(t))
+
+	setupBook(config, t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/books/bk_9f3a21c", nil)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
+
+	var got Book
+
+	err := json.Unmarshal(w.Body.Bytes(), &got)
+	require.NoError(t, err)
+
+	var expected Book
+
+	expectedBody := []byte(`{
+  "id": "bk_9f3a21c",
+  "volumeInfo": {
+    "title": "The Last Packet on the Wire",
+    "authors": [
+      "Alex Monroe",
+      "Jamie Calder"
+    ],
+    "publisher": "ByteForge Press",
+    "publishedDate": "2019-08-14",
+    "description": "A fast-paced techno-thriller following a backend engineer who uncovers a hidden protocol capable of reshaping the internet.",
+    "pageCount": 384,
+    "mainCategory": "Technology",
+    "categories": [
+      "Computers",
+      "Thriller",
+      "Software Engineering"
+    ]}}`)
+
+	err = json.Unmarshal(expectedBody, &expected)
+	require.NoError(t, err)
+
+	require.Equal(t, expected, got)
+
+}
+
+func Test_handlerCreateReview(t *testing.T) {
+	config := NewConfig(setupRedis(t), withTesting())
+
+	config.SetJWTSecret(jwtSecretTest)
+
+	setupBook(config, t)
+	usersData := setupUser(config, t)
+
+	var resp struct {
+		User
+		Token string `json:"token"`
+	}
+	err := json.Unmarshal(usersData, &resp)
+	require.NoError(t, err)
+
+	pattern := fmt.Sprintf("/reviews/%s", BookIdTest)
+
+	body := bytes.NewBuffer([]byte(`{
+	"description": "I love this book.",
+	"status": 2,
+	"rating": 10,
+	"current_page": 0,
+	"private": true
+	}`))
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", pattern, body)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusCreated, w.Code, "%s", w.Body.String())
+
+	var got Review
+	err = json.Unmarshal(w.Body.Bytes(), &got)
+	expected := Review{
+		BookID:      BookIdTest,
+		UserID:      resp.ID,
+		Description: "I love this book.",
+		Status:      Status(2),
+		Rating:      10,
+		Private:     true,
+		CurrentPage: 0,
+		CreatedAt:   got.CreatedAt,
+		UpdatedAt:   got.UpdatedAt,
+	}
+
+	require.Equal(t, expected, got)
+
+	// trying to create a duplicate
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("POST", pattern, body)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusConflict, w.Code, "%s", w.Body.String())
+
+}
+
+func Test_handlerDeleteReview(t *testing.T) {
+	config := NewConfig(setupRedis(t), withTesting())
+
+	config.SetJWTSecret(jwtSecretTest)
+
+	setupBook(config, t)
+	usersData := setupUser(config, t)
+
+	var resp struct {
+		User
+		Token string `json:"token"`
+	}
+	err := json.Unmarshal(usersData, &resp)
+	require.NoError(t, err)
+
+	pattern := fmt.Sprintf("/reviews/%s", BookIdTest)
+
+	body := bytes.NewBuffer([]byte(`{
+	"description": "I love this book.",
+	"status": 2,
+	"rating": 10,
+	"current_page": 0,
+	"private": true
+	}`))
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", pattern, body)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusCreated, w.Code, "%s", w.Body.String())
+
+	var got Review
+	err = json.Unmarshal(w.Body.Bytes(), &got)
+	expected := Review{
+		BookID:      BookIdTest,
+		UserID:      resp.ID,
+		Description: "I love this book.",
+		Status:      Status(2),
+		Rating:      10,
+		Private:     true,
+		CurrentPage: 0,
+		CreatedAt:   got.CreatedAt,
+		UpdatedAt:   got.UpdatedAt,
+	}
+
+	require.Equal(t, expected, got)
+
+	reviewID := strings.Join([]string{expected.UserID, BookIdTest, "1"}, IDSep)
+	t.Log(reviewID)
+
+	pattern = fmt.Sprintf("/reviews/%s", reviewID)
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("DELETE", pattern, nil)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusNoContent, w.Code, "%s", w.Body)
+}
+
+func Test_handlerGetReviewById(t *testing.T) {
+	config := NewConfig(setupRedis(t), withTesting())
+
+	config.SetJWTSecret(jwtSecretTest)
+
+	setupBook(config, t)
+	usersData := setupUser(config, t)
+
+	var resp struct {
+		User
+		Token string `json:"token"`
+	}
+	err := json.Unmarshal(usersData, &resp)
+	require.NoError(t, err)
+
+	// post a review
+	pattern := fmt.Sprintf("/reviews/%s", BookIdTest)
+
+	body := bytes.NewBuffer([]byte(`{
+	"description": "I love this book.",
+	"status": 2,
+	"rating": 10,
+	"current_page": 0,
+	"private": false
+	}`))
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", pattern, body)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusCreated, w.Code, "%s", w.Body)
+
+	// Get the posted review
+	var review Review
+	err = json.Unmarshal(w.Body.Bytes(), &review)
+
+	reviewID := strings.Join([]string{review.UserID, review.BookID, "0"}, IDSep)
+
+	pattern = fmt.Sprintf("/reviews/%s", reviewID)
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", pattern, nil)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusOK, w.Code, "%s", w.Body)
+
+}
+
+func Test_handlerGetReviewsByBookId(t *testing.T) {
+	config := NewConfig(setupRedis(t), withTesting())
+
+	config.SetJWTSecret(jwtSecretTest)
+
+	setupBook(config, t)
+	usersData := setupUser(config, t)
+
+	var resp struct {
+		User
+		Token string `json:"token"`
+	}
+	err := json.Unmarshal(usersData, &resp)
+	require.NoError(t, err)
+
+	pattern := fmt.Sprintf("/reviews/%s", BookIdTest)
+
+	body := bytes.NewBuffer([]byte(`{
+	"description": "I love this book.",
+	"status": 2,
+	"rating": 10,
+	"current_page": 0,
+	"private": false
+	}`))
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", pattern, body)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusCreated, w.Code, "%s", w.Body.String())
+
+	pattern = fmt.Sprintf("/reviews/books/%s", BookIdTest)
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", pattern, nil)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusAccepted, w.Code, "%s", w.Body.String())
+
+	expectedLen := 1
+
+	t.Log(w.Body.String())
+
+	var got []Review
+	err = json.Unmarshal(w.Body.Bytes(), &got)
+	require.NoError(t, err)
+	require.Len(t, got, expectedLen)
+}
+
+func Test_handlerUpdateReview(t *testing.T) {
+	config := NewConfig(setupRedis(t), withTesting())
+
+	config.SetJWTSecret(jwtSecretTest)
+
+	setupBook(config, t)
+	usersData := setupUser(config, t)
+
+	var resp struct {
+		User
+		Token string `json:"token"`
+	}
+	err := json.Unmarshal(usersData, &resp)
+	require.NoError(t, err)
+
+	pattern := fmt.Sprintf("/reviews/%s", BookIdTest)
+
+	body := bytes.NewBuffer([]byte(`{
+	"description": "I love this book.",
+	"status": 2,
+	"rating": 10,
+	"current_page": 0,
+	"private": false
+	}`))
+
+	// create a review
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", pattern, body)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	config.ServeHTTP(w, r)
+
+	require.Equalf(t, http.StatusCreated, w.Code, "%s", w.Body.String())
+
+	// update the review
+	body = bytes.NewBuffer([]byte(`{
+	"description": "I no longer love this book.",
+	"status": 3,
+	"rating": 10,
+	"current_page": 384,
+	"private": true
+	}`))
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("POST", pattern, body)
+	r.Header.Set("Authorization", "Bearer "+resp.Token)
+
+	require.Equalf(t, http.StatusOK, w.Code, "%s", w.Body.String())
+
+	var got Review
+
+	err = json.Unmarshal(w.Body.Bytes(), &got)
+
+	expected := Review{
+		BookID:      BookIdTest,
+		UserID:      resp.ID,
+		Description: "I no longer love this book.",
+		CreatedAt:   got.CreatedAt,
+		UpdatedAt:   got.UpdatedAt,
+		Status:      Status(3),
+		Rating:      10,
+		CurrentPage: 384,
+		Private:     true,
+	}
+	require.Equal(t, expected, got)
 }

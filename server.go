@@ -64,17 +64,16 @@ func (c *Config) setupMux() {
 
 	// books handling
 	mux.Get("/books", c.handlerGetBooks)
-	mux.Get("/books/{bookID}/reviews", c.handlerGetReviewsByBookId)
 	mux.Post("/books", c.handlerCreateBook)
 
-	mux.Get("/book/{id}", c.handlerGetBookById)
+	mux.Get("/books/{bookID}", c.handlerGetBookById)
 
 	// reviews handling
-
-	mux.Post("/review/{bookID}", c.middlewareAuth(c.handlerCreateReview))
-	mux.Delete("/review/{bookID}", c.middlewareAuth(c.handlerDeleteReview))
-	mux.Put("/review/{bookID}", c.middlewareAuth(c.handlerUpdateReview))
-	mux.Get("/review/{reviewID}", c.handlerGetReviewById)
+	mux.Get("/reviews/books/{bookID}", c.handlerGetReviewsByBookId)
+	mux.Post("/reviews/{bookID}", c.middlewareAuth(c.handlerCreateReview))
+	mux.Delete("/reviews/{reviewID}", c.middlewareAuth(c.handlerDeleteReview))
+	mux.Put("/reviews/{reviewID}", c.middlewareAuth(c.handlerUpdateReview))
+	mux.Get("/reviews/{reviewID}", c.handlerGetReviewById)
 
 	mux.Get("/tracked", c.middlewareAuth(c.handlerGetTracked))
 

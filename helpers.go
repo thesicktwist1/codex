@@ -1,6 +1,7 @@
 package main
 
 import (
+	"codex/internal/identifier"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 )
+
+type Categories map[string]string
 
 const (
 	// Hash key : values
@@ -35,7 +38,7 @@ const (
 	pageLimit = 20
 	testPath  = "/internal/test/book.json"
 
-	Sep = ":"
+	IDSep = ":"
 )
 
 var ErrExist = errors.New("target already exists")
@@ -63,7 +66,17 @@ func (c *Config) DeleteUser(ctx context.Context, user *User) error {
 	return c.redis.HDel(ctx, KeysTable, emailKey, userKey).Err()
 }
 
-func (c *Config) DeleteReview(ctx context.Context, review *Review) error {
+func (c *Config) CreateReview(ctx context.Context, review *Review) error {
+	id, err := identifier.Format(review.UserID, review.BookID, review.Private)
+	if err != nil {
+		return err
+	}
+	if err := c.HSetEncoded(ctx, ReviewsTable, id, review); err != nil {
+		return err
+	}
+	if err := c.HKeysAppend(ctx, ReviewKeys, review.BookID, id); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -102,7 +115,7 @@ func validateIndex(parameter string, length int) (int, error) {
 		return 0, err
 	}
 	if index >= length || index < 0 {
-		return 0, fmt.Errorf("invalid index")
+		return 0, fmt.Errorf("index: %d , length: %d", index, length)
 	}
 	return index, nil
 }
@@ -116,16 +129,12 @@ func parseReviewID(id string) (string, bool, error) {
 	return "", false, nil
 }
 
-func formatId(userId, resourceId string) string {
-	return strings.Join([]string{userId, resourceId}, Sep)
-}
-
 func parseURLQueryInt(q string) (int, error) {
 	var (
 		n   int
 		err error
 	)
-	if len(q) != 0 {
+	if q != "" {
 		n, err = strconv.Atoi(q)
 		if err != nil {
 			return 0, err
@@ -137,22 +146,15 @@ func parseURLQueryInt(q string) (int, error) {
 	return n, nil
 }
 
-func parseOwnerID(id string) (string, error) {
-	split := strings.Split(id, Sep)
-	if len(split) != 2 {
-		return "", fmt.Errorf("malformed id")
-	}
-
-	return split[0], nil
-}
-
-func validateURLParam(param string) error {
-	if len(param) == 0 {
-		return fmt.Errorf("empty url parameter")
-	}
-	for _, c := range param {
-		if c < 33 || c > 126 {
-			return fmt.Errorf("invalid title character : %v", c)
+func validateURLParams(params ...string) error {
+	for _, param := range params {
+		if len(param) == 0 {
+			return fmt.Errorf("empty url parameter")
+		}
+		for _, c := range param {
+			if c < 33 || c > 126 {
+				return fmt.Errorf("invalid title character : %v", c)
+			}
 		}
 	}
 	return nil

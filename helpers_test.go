@@ -40,7 +40,7 @@ func Test_validateURLParam(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		err := validateURLParam(tc.input)
+		err := validateURLParams(tc.input)
 		if tc.wantErr {
 			require.Error(t, err)
 		} else {
@@ -88,12 +88,6 @@ func Test_parseURLQueryInt(t *testing.T) {
 	}
 }
 
-func Test_formatId(t *testing.T) {
-	got := formatId("userexample", "randomid")
-	want := "userexample:randomid"
-	require.Equal(t, want, got)
-}
-
 func Test_generateKeys(t *testing.T) {
 	email := "test@example.com"
 	username := "johnnytest34"
@@ -103,4 +97,21 @@ func Test_generateKeys(t *testing.T) {
 	}
 	got := generateKeys(email, username)
 	require.Equal(t, expected, got)
+}
+
+func Test_validateIndex(t *testing.T) {
+	// valid index
+	length := 4
+	parameter := "2"
+	got, err := validateIndex(parameter, length)
+	require.NoError(t, err)
+	expected := 2
+
+	require.Equal(t, expected, got)
+
+	// out of bound index (parameter > length)
+	length = 2
+	parameter = "3"
+	got, err = validateIndex(parameter, length)
+	require.Error(t, err)
 }
